@@ -131,88 +131,106 @@
 
 
 
-#include <iostream>
-#include <fstream>
-#include <vector>
-#include <QDebug>
+// #include <iostream>
+// #include <fstream>
+// #include <vector>
+// #include <QDebug>
 
-using namespace std;
+// using namespace std;
 
-#include "okFrontPanel.h"
-#include "rhxcontroller.h"
-#include "rhxregisters.h"
-#include "rhxdatablock.h"
-#include "controller.h"
+// #include "okFrontPanel.h"
+// #include "rhxcontroller.h"
+// #include "rhxregisters.h"
+// #include "rhxdatablock.h"
+// #include "controller.h"
 
-int main(int argc,char* argv[])
+
+// void example(){
+
+// }
+
+// int main(int argc,char* argv[])
+// {
+//     // 使用 20 kHz 的每放大器采样率创建 RHX 控制器。
+//     RHXController *rhxController = new RHXController(ControllerStimRecord,
+//                                                      SampleRate20000Hz);
+
+//     // 打开第一个检测到的 Opal Kelly 设备，加载 RhythmStim USB-7310 位文件。
+//     vector<string> availableDevices = rhxController->listAvailableDeviceSerials();
+//     rhxController->open(availableDevices[0]);
+
+//     // 加载 RhythmStim USB-7310 位文件并初始化
+//     rhxController->uploadFPGABitfile("ConfigRHSController_7310.bit");
+//     rhxController->initialize();
+//     rhxController->enableDataStream(0, true);
+
+//     // 我们可以设置 MISO 采样延迟，它取决于采样率。
+//     // 我们假设使用了 3 英尺（约 0.91 米）的电缆。
+//     rhxController->setCableLengthFeet(PortA, 3.0);
+
+//     // 让我们点亮一个 LED，以指示程序正在运行。
+//     int ledArray[8] = {1, 0, 0, 0, 0, 0, 0, 0};
+//     rhxController->setLedDisplay(ledArray);
+
+//     Controller *controller = new Controller(rhxController);
+//     // 配置电极编号用于测试
+//     ElectrodeParameters *ele = new ElectrodeParameters("A1");
+
+//     // 配置各种波形参数
+//     ele->SetStimulationTiming(0,500,500,500);
+//     ele->SetStimulationAmplitude(100,100);
+//     ele->SetStimulationSource(0);
+
+//     // 载入电极参数
+//     controller->setStimSequenceParameters(ele);
+//     rhxController->setStimCmdMode(true);
+//     rhxController->setContinuousRunMode(true);
+//     rhxController->run();
+//     // 触发源为0的电极刺激
+//     controller->stimTrigger(0,true);
+
+
+//     // 从 USB 接口读取结果性的单个数据块。
+//     RHXDataBlock *dataBlock =
+//         new RHXDataBlock(rhxController->getType(),
+//                          rhxController->getNumEnabledDataStreams());
+//     rhxController->readDataBlock(dataBlock);
+//     qDebug()<<"NumEnabledDataStreams"<<rhxController->getNumEnabledDataStreams();
+//     // 显示来自数据流 0 的寄存器内容。
+//     // dataBlock->print(0);
+
+//     // 让我们将一秒钟的数据保存到磁盘上的一个二进制文件中。
+//     ofstream saveOut;
+//     saveOut.open("binary_save_file.dat", ios::binary | ios::out);
+
+//     deque<RHXDataBlock*> dataQueue;
+//     // 运行一秒钟。
+//     bool usbDataRead;
+//     do  {
+//         controller->stimTrigger(0,true);
+//         usbDataRead = rhxController->readDataBlocks(1, dataQueue);
+//         if (dataQueue.size() >= 50) {  // 一次保存 50 个数据块
+//             qDebug()<<"写入中";
+//             rhxController->queueToFile(dataQueue, saveOut);
+//         }
+//     } while (usbDataRead || rhxController->isRunning());
+
+//     rhxController->queueToFile(dataQueue, saveOut);
+
+//     saveOut.close();
+
+//     return 0;
+// }
+
+#include <QApplication>
+#include "mainwindow.h"
+
+int main(int argc, char *argv[])
 {
-    // 使用 20 kHz 的每放大器采样率创建 RHX 控制器。
-    RHXController *rhxController = new RHXController(ControllerStimRecord,
-                                                     SampleRate20000Hz);
+    QApplication a(argc, argv);
 
-    // 打开第一个检测到的 Opal Kelly 设备，加载 RhythmStim USB-7310 位文件。
-    vector<string> availableDevices = rhxController->listAvailableDeviceSerials();
-    rhxController->open(availableDevices[0]);
+    MainWindow w;
+    w.show();
 
-    // 加载 RhythmStim USB-7310 位文件并初始化
-    rhxController->uploadFPGABitfile("ConfigRHSController_7310.bit");
-    rhxController->initialize();
-    rhxController->enableDataStream(0, true);
-
-    // 我们可以设置 MISO 采样延迟，它取决于采样率。
-    // 我们假设使用了 3 英尺（约 0.91 米）的电缆。
-    rhxController->setCableLengthFeet(PortA, 3.0);
-
-    // 让我们点亮一个 LED，以指示程序正在运行。
-    int ledArray[8] = {1, 0, 0, 0, 0, 0, 0, 0};
-    rhxController->setLedDisplay(ledArray);
-
-    Controller *controller = new Controller(rhxController);
-    // 配置电极编号用于测试
-    ElectrodeParameters *ele = new ElectrodeParameters("A1");
-
-    // 配置各种波形参数
-    ele->SetStimulationTiming(0,500,500,500);
-    ele->SetStimulationAmplitude(100,100);
-    ele->SetStimulationSource(0);
-
-    // 载入电极参数
-    controller->setStimSequenceParameters(ele);
-    rhxController->setStimCmdMode(true);
-    rhxController->setContinuousRunMode(true);
-    rhxController->run();
-    // 触发源为0的电极刺激
-    controller->stimTrigger(0,true);
-
-
-    // 从 USB 接口读取结果性的单个数据块。
-    RHXDataBlock *dataBlock =
-        new RHXDataBlock(rhxController->getType(),
-                         rhxController->getNumEnabledDataStreams());
-    rhxController->readDataBlock(dataBlock);
-    qDebug()<<"NumEnabledDataStreams"<<rhxController->getNumEnabledDataStreams();
-    // 显示来自数据流 0 的寄存器内容。
-    // dataBlock->print(0);
-
-    // 让我们将一秒钟的数据保存到磁盘上的一个二进制文件中。
-    ofstream saveOut;
-    saveOut.open("binary_save_file.dat", ios::binary | ios::out);
-
-    deque<RHXDataBlock*> dataQueue;
-    // 运行一秒钟。
-    bool usbDataRead;
-    do  {
-        controller->stimTrigger(0,true);
-        usbDataRead = rhxController->readDataBlocks(1, dataQueue);
-        if (dataQueue.size() >= 50) {  // 一次保存 50 个数据块
-            qDebug()<<"写入中";
-            rhxController->queueToFile(dataQueue, saveOut);
-        }
-    } while (usbDataRead || rhxController->isRunning());
-
-    rhxController->queueToFile(dataQueue, saveOut);
-
-    saveOut.close();
-
-    return 0;
+    return a.exec();
 }

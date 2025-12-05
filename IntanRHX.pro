@@ -139,8 +139,10 @@ SOURCES += main.cpp \
     GUI/Widgets/controlpanel.cpp \
     GUI/Widgets/spectrogramplot.cpp \
     GUI/Windows/viewfilterswindow.cpp \
+    acquisitionengine.cpp \
     controller.cpp \
-    electrodeparameters.cpp
+    electrodeparameters.cpp \
+    mainwindow.cpp
 
 
 HEADERS += \
@@ -261,8 +263,10 @@ HEADERS += \
     GUI/Widgets/controlpanel.h \
     GUI/Widgets/spectrogramplot.h \
     GUI/Windows/viewfilterswindow.h \
+    acquisitionengine.h \
     controller.h \
-    electrodeparameters.h
+    electrodeparameters.h \
+    mainwindow.h
 
 RESOURCES += \
     IntanRHX.qrc
