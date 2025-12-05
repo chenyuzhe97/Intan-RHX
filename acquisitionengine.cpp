@@ -123,16 +123,21 @@ void AcquisitionEngine::stopAcquisition()
 {
     if (!m_deviceOpened) return;
 
+    // 1. 停止 USB 定时器，GUI 不再收到新数据
     m_usbTimer.stop();
 
-    // 停止 SPI
-    if (m_rhxController->isRunning()) {}
+    // 2. 清空本地队列，防止残留数据被慢慢处理
+    while (!m_dataQueue.empty()) {
+        delete m_dataQueue.front();
+        m_dataQueue.pop_front();
+    }
 
-    // 把 FIFO 剩余数据读干净可以自行决定，这里简单 flush
-    m_rhxController->flush();
+    // 3. **不要调用 flush()**，因为我们没有办法把板子真实停下来
+    //    保持它 free-run，等程序退出时在 cleanup() 里统一处理即可
 
-    emit logMessage("采集已停止");
+    emit logMessage("采集已停止（停止 USB 读取，但板子仍在运行）");
 }
+
 
 void AcquisitionEngine::onUsbTimer()
 {
