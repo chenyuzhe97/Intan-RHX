@@ -6,7 +6,7 @@
 
 CONFIG += c++17
 
-QT += core gui xml multimedia network widgets
+QT += core gui xml multimedia network widgets charts
 
 TARGET = IntanRHX
 TEMPLATE = app

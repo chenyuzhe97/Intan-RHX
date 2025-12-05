@@ -1,3 +1,4 @@
+// mainwindow.h
 #pragma once
 
 #include <QMainWindow>
@@ -7,7 +8,12 @@
 
 #include "acquisitionengine.h"
 
-class MainWindow : public QMainWindow
+#include <QtCharts/QChartView>
+#include <QtCharts/QLineSeries>
+#include <QtCharts/QValueAxis>
+
+
+    class MainWindow : public QMainWindow
 {
     Q_OBJECT
 public:
@@ -27,6 +33,7 @@ private slots:
 
 private:
     void setupUi();
+    void setupPlot();
     void appendLog(const QString &msg);
 
 private:
@@ -38,4 +45,16 @@ private:
     QPlainTextEdit   *m_logView = nullptr;
 
     AcquisitionEngine *m_engine = nullptr;
+
+    // ====== 新增：绘图相关 ======
+    QChartView    *m_chartView = nullptr;
+    QChart        *m_chart     = nullptr;
+    QLineSeries   *m_series    = nullptr;
+    QValueAxis    *m_axisX     = nullptr;
+    QValueAxis    *m_axisY     = nullptr;
+
+    // 滚动窗口数据缓冲（只保留最近 visibleWindowSec 秒）
+    QVector<QPointF> m_buffer;
+    double m_visibleWindowSec = 2.0;     // 显示最近 2 秒
+    double m_sampleRate       = 30000.0; // 和 AcquisitionEngine 里一致
 };

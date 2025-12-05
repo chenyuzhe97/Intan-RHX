@@ -6,6 +6,7 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
     setupUi();
+    setupPlot();
 
     m_engine = new AcquisitionEngine(this);
 
@@ -20,6 +21,35 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
 }
+
+void MainWindow::setupPlot()
+{
+    m_series = new QLineSeries(this);
+    m_chart  = new QChart();
+    m_chart->addSeries(m_series);
+    m_chart->legend()->hide();
+
+    m_axisX = new QValueAxis(this);
+    m_axisX->setTitleText("Time (s)");
+    m_axisX->setRange(0.0, m_visibleWindowSec);
+
+    m_axisY = new QValueAxis(this);
+    m_axisY->setTitleText("Amplitude (µV)");
+    m_axisY->setRange(-100.0, 100.0);  // 初始值，后面会自适应
+
+    m_chart->addAxis(m_axisX, Qt::AlignBottom);
+    m_chart->addAxis(m_axisY, Qt::AlignLeft);
+    m_series->attachAxis(m_axisX);
+    m_series->attachAxis(m_axisY);
+
+    m_chartView = new QChartView(m_chart, this);
+    m_chartView->setRenderHint(QPainter::Antialiasing);
+
+    // 把图加到原来的 layout 里（在 logView 上面）
+    // 假设 setupUi() 里最后 add 的是 m_logView：
+    m_layout->insertWidget(0, m_chartView, 1); // 放在最上面，占比较大空间
+}
+
 
 void MainWindow::setupUi()
 {
@@ -84,18 +114,62 @@ void MainWindow::onStop()
 void MainWindow::handleNewSamples(const QVector<uint32_t> &timeStamps,
                                   const QVector<QVector<int>> &channelData)
 {
-    // 这里只做一个简单示例：打印这一块里第 0 通道的最后一个样本
     if (channelData.isEmpty()) return;
-    int lastIndex = timeStamps.size() - 1;
-    if (lastIndex < 0) return;
+    if (timeStamps.isEmpty()) return;
 
-    int value = channelData[0][lastIndex];
-    appendLog(QString("新数据块：最后时间戳=%1, CH0=%2")
-                  .arg(timeStamps[lastIndex])
-                  .arg(value));
+    // 简单起见，先画 stream0 的 CH0（对应 channelData[0]）
+    const int ch = 0;
+    const QVector<int> &chData = channelData[ch];
 
-    // TODO：这里你可以把 channelData 推给 QCustomPlot / QtCharts 做实时波形
+    // 保险起见，确保长度一致
+    int N = qMin(timeStamps.size(), chData.size());
+    if (N <= 0) return;
+
+    // 下采样，避免点数太多拖慢 UI
+    const int decim = 10;  // 每 10 个点取一个，可以自己调
+
+    for (int i = 0; i < N; i += decim) {
+        uint32_t ts = timeStamps[i];
+        int raw      = chData[i];
+
+        // 时间：Intan 的 timeStamp 通常就是 sampleIndex（从 0 开始）
+        double tSec = double(ts) / m_sampleRate;
+
+        // 原始值转换为 µV：和你 Python 解析一样 (val - 32768)*0.195
+        double uV = (double(raw) - 32768.0) * 0.195;
+
+        m_buffer.append(QPointF(tSec, uV));
+    }
+
+    if (m_buffer.isEmpty()) return;
+
+    // 只保留最近 m_visibleWindowSec 秒的数据
+    double tMax = m_buffer.last().x();
+    double tMin = tMax - m_visibleWindowSec;
+    if (tMin < 0.0) tMin = 0.0;
+
+    while (!m_buffer.isEmpty() && m_buffer.first().x() < tMin) {
+        m_buffer.removeFirst();
+    }
+
+    // 更新曲线
+    m_series->replace(m_buffer);
+
+    // 自适应 Y 轴范围
+    double yMin = m_buffer.first().y();
+    double yMax = yMin;
+    for (const auto &p : m_buffer) {
+        if (p.y() < yMin) yMin = p.y();
+        if (p.y() > yMax) yMax = p.y();
+    }
+    // 给一点边距
+    double margin = 0.1 * (yMax - yMin + 1e-9);
+    m_axisY->setRange(yMin - margin, yMax + margin);
+
+    // 更新 X 轴范围
+    m_axisX->setRange(tMin, tMax);
 }
+
 
 void MainWindow::handleError(const QString &msg)
 {
