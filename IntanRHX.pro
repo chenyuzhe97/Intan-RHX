@@ -138,7 +138,9 @@ SOURCES += main.cpp \
     GUI/Dialogs/impedancefreqdialog.cpp \
     GUI/Widgets/controlpanel.cpp \
     GUI/Widgets/spectrogramplot.cpp \
-    GUI/Windows/viewfilterswindow.cpp
+    GUI/Windows/viewfilterswindow.cpp \
+    controller.cpp \
+    electrodeparameters.cpp
 
 
 HEADERS += \
@@ -258,7 +260,9 @@ HEADERS += \
     GUI/Dialogs/impedancefreqdialog.h \
     GUI/Widgets/controlpanel.h \
     GUI/Widgets/spectrogramplot.h \
-    GUI/Windows/viewfilterswindow.h
+    GUI/Windows/viewfilterswindow.h \
+    controller.h \
+    electrodeparameters.h
 
 RESOURCES += \
     IntanRHX.qrc
@@ -288,7 +292,7 @@ win32: {
     LIBS += -L$$PWD/libraries/Windows/ -lOpenCL # OpenCL library
     LIBS += -L$$PWD/libraries/Windows/ -lokFrontPanel # Opal Kelly Front Panel library
     LIBS += -L$$PWD/libraries/Windows/ -ldelayimp # Microsoft's Delay Import library
-    QMAKE_LFLAGS += /DELAYLOAD:okFrontPanel.dll # Use delayimp to only load okFrontPanel.dll when necessary,
+    # QMAKE_LFLAGS += /DELAYLOAD:okFrontPanel.dll # Use delayimp to only load okFrontPanel.dll when necessary,
                                             # so we can give an error message when okFrontPanel.dll is missing
 }
 

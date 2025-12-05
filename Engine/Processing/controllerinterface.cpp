@@ -1243,6 +1243,8 @@ void ControllerInterface::setStimSequenceParameters(Channel* ampChannel)
     int postStimChargeRecovOff = round(parameters->postStimChargeRecovOff->getValue() / timestep );
     int pulseTrainPeriod = round(parameters->pulseTrainPeriod->getValue() / timestep);
 
+
+
     int eventStartStim;
     int eventStimPhase2;
     int eventStimPhase3;
