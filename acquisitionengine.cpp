@@ -65,9 +65,11 @@ bool AcquisitionEngine::openDevice(const QString &bitfilePath)
 
     // 默认先开 stream 0，后面你可以在 GUI 勾选其它 stream
     m_rhxController->enableDataStream(0, true);
+    m_rhxController->enableDataStream(2, true);
 
     // 设置 MISO 采样延迟：假设 3 英尺线缆
     m_rhxController->setCableLengthFeet(PortA, 3.0);
+    m_rhxController->setCableLengthFeet(PortB, 3.0);
 
     // 亮一个 LED 表示程序在跑
     int ledArray[8] = {1,0,0,0,0,0,0,0};
