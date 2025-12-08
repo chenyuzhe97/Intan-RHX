@@ -207,6 +207,37 @@ void AcquisitionEngine::configureStim(const QString &electrodeName,
 {
     if (!m_deviceOpened || !m_stimController) return;
 
+    // ========= 0. 记录当前是否在 continuous 采集 =========
+    bool wasRunning = m_rhxController->isRunning();
+
+    if (wasRunning) {
+        // 先停掉 USB 定时器，避免 onUsbTimer 再来抢总线
+        m_usbTimer.stop();
+
+        // 清空本地队列（防止残留造成延迟）
+        while (!m_dataQueue.empty()) {
+            delete m_dataQueue.front();
+            m_dataQueue.pop_front();
+        }
+
+        // ========= 1. 从 infinite continuous run “退场” =========
+        // 思路：把模式改成非 continuous，然后跑一次有限步 run，
+        // 让之前的无限循环结束。
+        m_rhxController->setContinuousRunMode(false);
+        m_rhxController->setStimCmdMode(false);  // 交给 setStimSequenceParameters 再设置
+
+        m_rhxController->run();
+        // 等这次有限 run 完成（isRunning 变成 false）
+        while (m_rhxController->isRunning()) {
+            // 让 UI 和其它事件还能跑，避免假死
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+        }
+
+        // 这里不调用 flush()，避免再进入潜在死循环
+        // 如果以后你真想把 USB FIFO 清空，可以再设计一个安全版的 flush
+    }
+
+
     // 这里用你已有的 ElectrodeParameters
     ElectrodeParameters *ele =
         new ElectrodeParameters(electrodeName.toStdString());
@@ -226,7 +257,20 @@ void AcquisitionEngine::configureStim(const QString &electrodeName,
     // 载入参数，底层就是你之前贴出的 setStimSequenceParameters()
     m_stimController->setStimSequenceParameters(ele);
 
-    emit logMessage(QStringLiteral("已配置刺激电极 %1").arg(electrodeName));
+    // ========= 3. 如果之前在跑 continuous，重新恢复 =========
+    if (wasRunning) {
+        m_rhxController->setContinuousRunMode(true);
+        m_rhxController->setStimCmdMode(true);
+        m_rhxController->run();
+
+        m_usbTimer.start();
+        emit logMessage(QStringLiteral("刺激参数已更新，并恢复连续采集（电极 %1）")
+                            .arg(electrodeName));
+    } else {
+        emit logMessage(QStringLiteral("刺激参数已更新（电极 %1）")
+                            .arg(electrodeName));
+    }
+
 }
 
 void AcquisitionEngine::triggerStim(int triggerSource, bool on)
