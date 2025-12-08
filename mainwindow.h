@@ -5,6 +5,8 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QVBoxLayout>
+#include <QComboBox>
+#include <QLabel>
 
 #include "acquisitionengine.h"
 
@@ -12,8 +14,10 @@
 #include <QtCharts/QLineSeries>
 #include <QtCharts/QValueAxis>
 
+// Qt6 一般用 namespace QtCharts;
+using namespace QtCharts;
 
-    class MainWindow : public QMainWindow
+class MainWindow : public QMainWindow
 {
     Q_OBJECT
 public:
@@ -31,9 +35,13 @@ private slots:
     void handleError(const QString &msg);
     void handleLog(const QString &msg);
 
+    // ⭐ 新增：通道选择变化时
+    void onChannelChanged(int index);
+
 private:
     void setupUi();
-    void setupPlot();
+    void setupSinglePlot();   // ⭐ 单通道图
+    void setupMultiPlot();    // ⭐ 多通道图
     void appendLog(const QString &msg);
 
 private:
@@ -46,15 +54,30 @@ private:
 
     AcquisitionEngine *m_engine = nullptr;
 
-    // ====== 新增：绘图相关 ======
+    // ===== 单通道图（你原来的那套） =====
     QChartView    *m_chartView = nullptr;
     QChart        *m_chart     = nullptr;
     QLineSeries   *m_series    = nullptr;
     QValueAxis    *m_axisX     = nullptr;
     QValueAxis    *m_axisY     = nullptr;
-
-    // 滚动窗口数据缓冲（只保留最近 visibleWindowSec 秒）
     QVector<QPointF> m_buffer;
-    double m_visibleWindowSec = 2.0;     // 显示最近 2 秒
-    double m_sampleRate       = 30000.0; // 和 AcquisitionEngine 里一致
+    double m_visibleWindowSec = 2.0;
+    double m_sampleRate       = 30000.0;
+
+    // ⭐ 新增：通道选择控件
+    QComboBox     *m_comboChannel = nullptr;
+    int            m_currentChannel = 0;    // 当前单通道视图使用的通道
+
+    // ⭐ 新增：多通道图相关
+    static const int NUM_CHANNELS = 16;     // RHS 一条 stream 16 通道
+
+    QChartView    *m_multiChartView = nullptr;
+    QChart        *m_multiChart     = nullptr;
+    QValueAxis    *m_multiAxisX     = nullptr;
+    QValueAxis    *m_multiAxisY     = nullptr;
+
+    // 每个通道一条曲线
+    QVector<QLineSeries*>        m_multiSeries;        // size = NUM_CHANNELS
+    QVector<QVector<QPointF>>    m_multiBuffers;       // size = NUM_CHANNELS
+    double m_multiWindowSec = 2.0;
 };
