@@ -36,6 +36,7 @@ private slots:
 
     // ⭐ 新增：通道选择变化时
     void onChannelChanged(int index);
+    void onStimOnce();
 
 private:
     void setupUi();
@@ -49,6 +50,7 @@ private:
     QPushButton      *m_btnOpen = nullptr;
     QPushButton      *m_btnStart = nullptr;
     QPushButton      *m_btnStop = nullptr;
+    QPushButton      *m_btnStim  = nullptr;
     QPlainTextEdit   *m_logView = nullptr;
 
     AcquisitionEngine *m_engine = nullptr;

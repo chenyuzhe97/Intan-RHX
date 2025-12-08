@@ -103,21 +103,22 @@ void AcquisitionEngine::startContinuousAcquisition()
         return;
     }
 
-    // FIFO 清空一下，避免旧数据
-    m_rhxController->flush();
+    // 不再 flush，前面我们已经删掉了
+    // m_rhxController->flush();
 
     // 采集模式：连续
     m_rhxController->setContinuousRunMode(true);
-    m_rhxController->setStimCmdMode(false); // 这里先只采集不刺激
+    m_rhxController->setStimCmdMode(true);   // ⭐ 开启刺激命令模式
 
-    // 开始 SPI 采集
+    // 开始 SPI 采集（同时可以收数 + 刺激）
     m_rhxController->run();
 
     // 启动 USB 轮询定时器
     m_usbTimer.start();
 
-    emit logMessage("连续采集已启动");
+    emit logMessage("连续采集已启动（允许发送刺激）");
 }
+
 
 void AcquisitionEngine::stopAcquisition()
 {
