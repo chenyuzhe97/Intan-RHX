@@ -5,19 +5,30 @@
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    NUM_CHANNELS = 16;
     setupUi();
-    setupSinglePlot();   // ⭐ 初始化单通道图
-    // setupMultiPlot();    // ⭐ 初始化多通道叠加图
+    setupSinglePlot();   // 你的画图初始化
 
     m_engine = new AcquisitionEngine(this);
+    m_experiment = new ExperimentController(m_engine, this);
 
     connect(m_engine, &AcquisitionEngine::newSamples,
-            this, &MainWindow::handleNewSamples);
+            this,      &MainWindow::handleNewSamples);
     connect(m_engine, &AcquisitionEngine::errorOccurred,
-            this, &MainWindow::handleError);
+            this,      &MainWindow::handleError);
     connect(m_engine, &AcquisitionEngine::logMessage,
-            this, &MainWindow::handleLog);
+            this,      &MainWindow::handleLog);
+
+    // 闭环控制器的 log 直接接到日志视图
+    connect(m_experiment, &ExperimentController::logMessage,
+            this,         &MainWindow::handleLog);
+
+    // 每个 epoch 结束时，把 RMS 和是否刺激显示出来
+    connect(m_experiment, &ExperimentController::epochRmsComputed,
+            this, [this](double rms, bool stimulated) {
+                appendLog(QString("Epoch RMS = %1 µV, %2")
+                              .arg(rms, 0, 'f', 2)
+                              .arg(stimulated ? "已发刺激" : "未刺激"));
+            });
 }
 
 
@@ -180,12 +191,11 @@ void MainWindow::onOpenDevice()
         appendLog("打开设备成功");
     }
 }
-
 void MainWindow::onStart()
 {
     if (!m_engine) return;
 
-    // 1️⃣ 先配置一次默认刺激波形（在没跑 continuous 时是安全的）
+    // 1️⃣ 先配置一次默认刺激参数（安全：此时还未 startContinuousAcquisition）
     QString electrodeName = "A1";
     int firstAmp_uA       = 100;
     int secondAmp_uA      = 100;
@@ -204,14 +214,28 @@ void MainWindow::onStart()
                             numPulses,
                             triggerSource);
 
-    // 2️⃣ 再开始连续采集
+    // 2️⃣ 开 continuous 采集
     m_engine->startContinuousAcquisition();
+
+    // 3️⃣ 启动闭环控制（每 5 秒算一次 RMS → 决定是否 trigger）
+    if (m_experiment) {
+        // 可选：让闭环用当前 GUI 选的通道，比如 m_currentChannel
+        m_experiment->setChannel(m_currentChannel);
+        m_experiment->start();
+    }
 }
 
 void MainWindow::onStop()
 {
-    m_engine->stopAcquisition();
+    if (m_experiment) {
+        m_experiment->stop();
+    }
+
+    if (m_engine) {
+        m_engine->stopAcquisition();
+    }
 }
+
 void MainWindow::handleNewSamples(const QVector<uint32_t> &timeStamps,
                                   const QVector<QVector<int>> &channelData)
 {
