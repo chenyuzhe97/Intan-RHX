@@ -5,6 +5,7 @@
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
+    NUM_CHANNELS = 16;
     setupUi();
     setupSinglePlot();   // ⭐ 初始化单通道图
     setupMultiPlot();    // ⭐ 初始化多通道叠加图
@@ -24,33 +25,6 @@ MainWindow::~MainWindow()
 {
 }
 
-void MainWindow::setupPlot()
-{
-    m_series = new QLineSeries(this);
-    m_chart  = new QChart();
-    m_chart->addSeries(m_series);
-    m_chart->legend()->hide();
-
-    m_axisX = new QValueAxis(this);
-    m_axisX->setTitleText("Time (s)");
-    m_axisX->setRange(0.0, m_visibleWindowSec);
-
-    m_axisY = new QValueAxis(this);
-    m_axisY->setTitleText("Amplitude (µV)");
-    m_axisY->setRange(-100.0, 100.0);  // 初始值，后面会自适应
-
-    m_chart->addAxis(m_axisX, Qt::AlignBottom);
-    m_chart->addAxis(m_axisY, Qt::AlignLeft);
-    m_series->attachAxis(m_axisX);
-    m_series->attachAxis(m_axisY);
-
-    m_chartView = new QChartView(m_chart, this);
-    m_chartView->setRenderHint(QPainter::Antialiasing);
-
-    // 把图加到原来的 layout 里（在 logView 上面）
-    // 假设 setupUi() 里最后 add 的是 m_logView：
-    m_layout->insertWidget(0, m_chartView, 1); // 放在最上面，占比较大空间
-}
 
 
 void MainWindow::setupUi()
@@ -103,8 +77,9 @@ void MainWindow::setupUi()
     connect(m_comboChannel,
             QOverload<int>::of(&QComboBox::currentIndexChanged),
             this,
-            &MainWindow::);
+            &MainWindow::onChannelChanged);
 }
+
 
 void MainWindow::setupSinglePlot()
 {

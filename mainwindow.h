@@ -15,7 +15,6 @@
 #include <QtCharts/QValueAxis>
 
 // Qt6 一般用 namespace QtCharts;
-using namespace QtCharts;
 
 class MainWindow : public QMainWindow
 {
@@ -69,7 +68,7 @@ private:
     int            m_currentChannel = 0;    // 当前单通道视图使用的通道
 
     // ⭐ 新增：多通道图相关
-    static const int NUM_CHANNELS = 16;     // RHS 一条 stream 16 通道
+    int NUM_CHANNELS = 16;     // RHS 一条 stream 16 通道
 
     QChartView    *m_multiChartView = nullptr;
     QChart        *m_multiChart     = nullptr;
