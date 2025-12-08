@@ -6,10 +6,10 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
     setupUi();
-    setupSinglePlot();   // 你的画图初始化
+    setupSinglePlot();
 
     m_engine = new AcquisitionEngine(this);
-    m_experiment = new ExperimentController(m_engine, this);
+    m_experiment = new ExperimentControllerAB(m_engine, this);
 
     connect(m_engine, &AcquisitionEngine::newSamples,
             this,      &MainWindow::handleNewSamples);
@@ -18,18 +18,20 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_engine, &AcquisitionEngine::logMessage,
             this,      &MainWindow::handleLog);
 
-    // 闭环控制器的 log 直接接到日志视图
-    connect(m_experiment, &ExperimentController::logMessage,
+    connect(m_experiment, &ExperimentControllerAB::logMessage,
             this,         &MainWindow::handleLog);
 
-    // 每个 epoch 结束时，把 RMS 和是否刺激显示出来
-    connect(m_experiment, &ExperimentController::epochRmsComputed,
-            this, [this](double rms, bool stimulated) {
-                appendLog(QString("Epoch RMS = %1 µV, %2")
+    connect(m_experiment, &ExperimentControllerAB::epochFinished,
+            this,
+            [this](int phaseIdx, double rms, bool stimulated) {
+                QString phaseName = (phaseIdx == 0) ? "PhaseA(A→B)" : "PhaseB(B→A)";
+                appendLog(QString("%1: RMS=%2 µV, %3")
+                              .arg(phaseName)
                               .arg(rms, 0, 'f', 2)
-                              .arg(stimulated ? "已发刺激" : "未刺激"));
+                              .arg(stimulated ? "已刺激" : "未刺激"));
             });
 }
+
 
 
 MainWindow::~MainWindow()
@@ -191,36 +193,53 @@ void MainWindow::onOpenDevice()
         appendLog("打开设备成功");
     }
 }
+
 void MainWindow::onStart()
 {
     if (!m_engine) return;
 
-    // 1️⃣ 先配置一次默认刺激参数（安全：此时还未 startContinuousAcquisition）
-    QString electrodeName = "A1";
-    int firstAmp_uA       = 100;
-    int secondAmp_uA      = 100;
-    int firstDur_us       = 500;
-    int secondDur_us      = 500;
-    int interDelay_us     = 500;
-    int numPulses         = 1;
-    int triggerSource     = 0;
+    // ★ 预配置 A/B 刺激波形 ★
+    // 假设：
+    //   - triggerSource 0 → 刺激 A 端（比如 A1）
+    //   - triggerSource 1 → 刺激 B 端（比如 B1）
 
-    m_engine->configureStim(electrodeName,
-                            firstAmp_uA,
-                            secondAmp_uA,
-                            firstDur_us,
-                            secondDur_us,
-                            interDelay_us,
-                            numPulses,
-                            triggerSource);
+    // 配置 A 端刺激（对应 PhaseB 时用）
+    m_engine->configureStim("A1",
+                            100, 100,   // 幅值 uA
+                            500, 500,   // 两相时长 us
+                            500,        // interPhase/refractory
+                            1,          // numPulses
+                            0);         // triggerSource 0 -> 刺激 A
 
-    // 2️⃣ 开 continuous 采集
+    // 配置 B 端刺激（对应 PhaseA 时用）
+    m_engine->configureStim("B1",
+                            100, 100,
+                            500, 500,
+                            500,
+                            1,
+                            1);         // triggerSource 1 -> 刺激 B
+
+    // 启动连续采集
     m_engine->startContinuousAcquisition();
 
-    // 3️⃣ 启动闭环控制（每 5 秒算一次 RMS → 决定是否 trigger）
+    // 配置 A↔B 闭环参数
     if (m_experiment) {
-        // 可选：让闭环用当前 GUI 选的通道，比如 m_currentChannel
-        m_experiment->setChannel(m_currentChannel);
+        // 比如：A 对应 CH0，B 对应 CH1（你可以根据实际情况调整）
+        m_experiment->setChannels(0, 1);
+
+        // epoch 长度（你可以先用 5 秒，之后改成 30 秒）
+        m_experiment->setEpochDuration(5.0);
+
+        // 阈值（先设一样，之后可以分开调）
+        m_experiment->setRmsThresholds(50.0, 50.0);
+
+        // PhaseA：看 A 通道 → RMS_A 超阈值 → 用 trigger 1 刺激 B
+        // PhaseB：看 B 通道 → RMS_B 超阈值 → 用 trigger 0 刺激 A
+        m_experiment->setTriggers(
+            1,  // trigWhenAStimB
+            0   // trigWhenBStimA
+            );
+
         m_experiment->start();
     }
 }
@@ -230,11 +249,11 @@ void MainWindow::onStop()
     if (m_experiment) {
         m_experiment->stop();
     }
-
     if (m_engine) {
         m_engine->stopAcquisition();
     }
 }
+
 
 void MainWindow::handleNewSamples(const QVector<uint32_t> &timeStamps,
                                   const QVector<QVector<int>> &channelData)

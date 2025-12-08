@@ -9,7 +9,7 @@
 #include <QLabel>
 
 #include "acquisitionengine.h"
-#include "experimentcontroller.h"
+#include "experimentcontrollerab.h"
 
 #include <QtCharts/QChartView>
 #include <QtCharts/QLineSeries>
@@ -55,7 +55,7 @@ private:
     QPlainTextEdit   *m_logView = nullptr;
 
     AcquisitionEngine   *m_engine      = nullptr;
-    ExperimentController *m_experiment = nullptr;
+    ExperimentControllerAB *m_experiment = nullptr;
 
     // ===== 单通道图（你原来的那套） =====
     QChartView    *m_chartView = nullptr;

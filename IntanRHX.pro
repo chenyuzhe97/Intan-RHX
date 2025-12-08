@@ -143,6 +143,7 @@ SOURCES += main.cpp \
     controller.cpp \
     electrodeparameters.cpp \
     experimentcontroller.cpp \
+    experimentcontrollerab.cpp \
     mainwindow.cpp
 
 
@@ -268,6 +269,7 @@ HEADERS += \
     controller.h \
     electrodeparameters.h \
     experimentcontroller.h \
+    experimentcontrollerab.h \
     mainwindow.h
 
 RESOURCES += \
