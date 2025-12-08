@@ -5,8 +5,11 @@
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
+
     setupUi();
     setupSinglePlot();
+    setupStream2Plot();    // ⭐ 新增：stream2 多通道
+
 
     m_engine = new AcquisitionEngine(this);
     m_experiment = new ExperimentControllerAB(m_engine, this);
@@ -17,6 +20,11 @@ MainWindow::MainWindow(QWidget *parent)
             this,      &MainWindow::handleError);
     connect(m_engine, &AcquisitionEngine::logMessage,
             this,      &MainWindow::handleLog);
+
+    // ⭐ 连接新的信号到新的槽
+    connect(m_engine, &AcquisitionEngine::newSamplesStream2,
+            this,      &MainWindow::handleNewSamplesStream2);
+
 
     connect(m_experiment, &ExperimentControllerAB::logMessage,
             this,         &MainWindow::handleLog);
@@ -39,49 +47,64 @@ MainWindow::~MainWindow()
 }
 
 
-
 void MainWindow::setupUi()
 {
     m_central = new QWidget(this);
     m_layout  = new QVBoxLayout(m_central);
 
-    m_btnOpen  = new QPushButton(tr("打开设备"), m_central);
-    m_btnStart = new QPushButton(tr("开始采集"), m_central);
-    m_btnStop  = new QPushButton(tr("停止采集"), m_central);
-    m_btnStim  = new QPushButton(tr("发一次刺激 (A1)"), m_central);
-    m_logView  = new QPlainTextEdit(m_central);
-    m_logView->setReadOnly(true);
+    // ===== 顶部按钮一行 =====
+    QHBoxLayout *buttonLayout = new QHBoxLayout();
+    m_btnOpen  = new QPushButton(tr("打开设备"), this);
+    m_btnStart = new QPushButton(tr("开始采集"), this);
+    m_btnStop  = new QPushButton(tr("停止采集"), this);
+    m_btnStim  = new QPushButton(tr("发一次刺激 (A1)"), this);
 
-    // 顶部按钮
-    m_layout->addWidget(m_btnOpen);
-    m_layout->addWidget(m_btnStart);
-    m_layout->addWidget(m_btnStop);
-    m_layout->addWidget(m_btnStim);   // ⭐ 加在按钮区域
+    buttonLayout->addWidget(m_btnOpen);
+    buttonLayout->addWidget(m_btnStart);
+    buttonLayout->addWidget(m_btnStop);
+    buttonLayout->addWidget(m_btnStim);
+    buttonLayout->addStretch(1);  // 右边空出来一点
 
+    m_layout->addLayout(buttonLayout);
 
-    // ⭐ 中间插一个“单通道图”占位（真正的图在 setupSinglePlot 里 addWidget）
-    // 这里先不插，等 setupSinglePlot 调用 insertWidget
-
-    // ⭐ 通道选择控件
-    QHBoxLayout *channelLayout = new QHBoxLayout();
-    QLabel *label = new QLabel(tr("单通道显示通道："), m_central);
-    m_comboChannel = new QComboBox(m_central);
+    // ===== Stream0 单通道：通道选择 + 图，占位 =====
+    // 通道下拉框（stream0）
+    QHBoxLayout *chLayout0 = new QHBoxLayout();
+    QLabel *label0 = new QLabel(tr("Stream 0 通道："), this);
+    m_comboChannel = new QComboBox(this);
     for (int ch = 0; ch < NUM_CHANNELS; ++ch) {
         m_comboChannel->addItem(QString("CH%1").arg(ch), ch);
     }
-    channelLayout->addWidget(label);
-    channelLayout->addWidget(m_comboChannel);
-    channelLayout->addStretch(1);
+    chLayout0->addWidget(label0);
+    chLayout0->addWidget(m_comboChannel);
+    chLayout0->addStretch(1);
+    m_layout->addLayout(chLayout0);
 
-    m_layout->addLayout(channelLayout);
+    // 图本身在 setupSinglePlot() 里插入
 
-    // ⭐ 多通道图占位（真正 add 在 setupMultiPlot 里）
+    // ===== Stream2 单通道：通道选择 + 图，占位 =====
+    // 通道下拉框（stream2）
+    QHBoxLayout *chLayout2 = new QHBoxLayout();
+    QLabel *label2 = new QLabel(tr("Stream 2 通道："), this);
+    m_comboStream2Ch = new QComboBox(this);
+    for (int ch = 0; ch < 16; ++ch) {   // 一个 data stream 16 个通道
+        m_comboStream2Ch->addItem(QString("CH%1").arg(ch), ch);
+    }
+    chLayout2->addWidget(label2);
+    chLayout2->addWidget(m_comboStream2Ch);
+    chLayout2->addStretch(1);
+    m_layout->addLayout(chLayout2);
 
-    // 底部 log
+    // 图本身在 setupStream2Plot() 里插入
+
+    // ===== 底部日志框 =====
+    m_logView  = new QPlainTextEdit(this);
+    m_logView->setReadOnly(true);
     m_layout->addWidget(m_logView, 1);
 
     setCentralWidget(m_central);
 
+    // ===== 按钮信号槽 =====
     connect(m_btnOpen,  &QPushButton::clicked,
             this,       &MainWindow::onOpenDevice);
     connect(m_btnStart, &QPushButton::clicked,
@@ -91,13 +114,23 @@ void MainWindow::setupUi()
     connect(m_btnStim,  &QPushButton::clicked,
             this,       &MainWindow::onStimOnce);
 
-    // ⭐ 通道选择信号
+    // ===== 单通道（Stream0）通道选择 =====
     connect(m_comboChannel,
             QOverload<int>::of(&QComboBox::currentIndexChanged),
             this,
             &MainWindow::onChannelChanged);
-}
 
+    // ===== Stream2 通道选择 =====
+    connect(m_comboStream2Ch,
+            QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this,
+            [this](int index) {
+                m_currentChStream2 = m_comboStream2Ch->itemData(index).toInt();
+                appendLog(QString("切换 Stream2 显示到 CH%1").arg(m_currentChStream2));
+                m_bufferStream2.clear();
+                if (m_seriesStream2) m_seriesStream2->clear();
+            });
+}
 
 void MainWindow::setupSinglePlot()
 {
@@ -105,13 +138,14 @@ void MainWindow::setupSinglePlot()
     m_chart  = new QChart();
     m_chart->addSeries(m_series);
     m_chart->legend()->hide();
+    m_chart->setTitle(tr("Stream 0 单通道实时波形"));
 
     m_axisX = new QValueAxis(this);
     m_axisX->setTitleText("Time (s)");
     m_axisX->setRange(0.0, m_visibleWindowSec);
 
     m_axisY = new QValueAxis(this);
-    m_axisY->setTitleText("Amplitude (µV)");
+    m_axisY->setTitleText("Voltage (µV)");   // ⭐ 改成和 stream2 一致
     m_axisY->setRange(-100.0, 100.0);
 
     m_chart->addAxis(m_axisX, Qt::AlignBottom);
@@ -122,10 +156,44 @@ void MainWindow::setupSinglePlot()
     m_chartView = new QChartView(m_chart, this);
     m_chartView->setRenderHint(QPainter::Antialiasing);
 
-    // 把单通道图插到按钮下面（布局最上面），索引 0 或 1 视你按钮多少个
-    // 这里假设按钮三行已经在最上面，我们想把图放在按钮之后
-    m_layout->insertWidget(3, m_chartView, 2);
+    // 按钮行 + Stream0 通道选择布局之后，索引大概是 1 或 2；
+    // 我们把单通道图插在“Stream0 通道选择”后面：
+    int insertIndex = 2; // 0: 按钮行, 1: Stream0 通道布局, 2: 这里
+    m_layout->insertWidget(insertIndex, m_chartView, 2);
 }
+void MainWindow::setupStream2Plot()
+{
+    m_chartStream2 = new QChart();
+    m_chartStream2->legend()->hide();
+    m_chartStream2->setTitle(tr("Stream 2 单通道实时波形"));
+
+    m_axisX2 = new QValueAxis(this);
+    m_axisX2->setTitleText("Time (s)");
+    m_axisX2->setRange(0.0, m_stream2WindowSec);
+
+    m_axisY2 = new QValueAxis(this);
+    m_axisY2->setTitleText("Voltage (µV)");  // ⭐ 和上面统一
+    m_axisY2->setRange(-200.0, 200.0);
+
+    m_chartStream2->addAxis(m_axisX2, Qt::AlignBottom);
+    m_chartStream2->addAxis(m_axisY2, Qt::AlignLeft);
+
+    m_seriesStream2 = new QLineSeries(this);
+    m_chartStream2->addSeries(m_seriesStream2);
+    m_seriesStream2->attachAxis(m_axisX2);
+    m_seriesStream2->attachAxis(m_axisY2);
+
+    m_chartViewStream2 = new QChartView(m_chartStream2, this);
+    m_chartViewStream2->setRenderHint(QPainter::Antialiasing);
+
+    // 插在 “Stream2 通道选择布局” 后面
+    // layout 顺序：0 按钮行，1 Stream0通道布局，2 Stream0图，3 Stream2通道布局，4 待插 Stream2图，5 日志
+    int logIndex = m_layout->indexOf(m_logView);
+    int insertIndex = (logIndex > 0) ? logIndex : m_layout->count();
+    // 日志在最后一个，所以 Stream2 曲线插在日志前面
+    m_layout->insertWidget(insertIndex, m_chartViewStream2, 2);
+}
+
 
 void MainWindow::setupMultiPlot()
 {
@@ -316,7 +384,60 @@ void MainWindow::handleNewSamples(const QVector<uint32_t> &timeStamps,
     // X 轴固定滑动窗口 [tMin, tMax]，就是“只看最后 2 秒”
     m_axisX->setRange(tMin, tMax);
 }
+void MainWindow::handleNewSamplesStream2(const QVector<uint32_t> &timeStamps,
+                                         const QVector<QVector<int>> &channelData)
+{
+    if (channelData.isEmpty()) return;
+    if (timeStamps.isEmpty()) return;
 
+    int numCh = channelData.size();
+    int N = timeStamps.size();
+    if (N <= 0) return;
+
+    int chSel = qBound(0, m_currentChStream2, numCh - 1);
+    const QVector<int> &chData = channelData[chSel];
+    int Nsingle = qMin(N, chData.size());
+    if (Nsingle <= 0) return;
+
+    const int decim = 30;  // 下采样，减负载
+
+    for (int i = 0; i < Nsingle; i += decim) {
+        uint32_t ts = timeStamps[i];
+        int raw      = chData[i];
+
+        double tSec = double(ts) / m_sampleRate;
+        double uV   = (double(raw) - 32768.0) * 0.195;
+
+        m_bufferStream2.append(QPointF(tSec, uV));
+    }
+
+    if (m_bufferStream2.isEmpty()) return;
+
+    // 只保留最近 m_stream2WindowSec 秒
+    double tMax = m_bufferStream2.last().x();
+    double tMin = tMax - m_stream2WindowSec;
+    if (tMin < 0.0) tMin = 0.0;
+
+    while (!m_bufferStream2.isEmpty() && m_bufferStream2.first().x() < tMin) {
+        m_bufferStream2.removeFirst();
+    }
+
+    // 更新曲线
+    m_seriesStream2->replace(m_bufferStream2);
+
+    // 自动 Y 轴范围
+    double yMin = m_bufferStream2.first().y();
+    double yMax = yMin;
+    for (const auto &p : m_bufferStream2) {
+        if (p.y() < yMin) yMin = p.y();
+        if (p.y() > yMax) yMax = p.y();
+    }
+    double margin = 0.1 * (yMax - yMin + 1e-9);
+    m_axisY2->setRange(yMin - margin, yMax + margin);
+
+    // X 轴范围
+    m_axisX2->setRange(tMin, tMax);
+}
 
 
 void MainWindow::handleError(const QString &msg)

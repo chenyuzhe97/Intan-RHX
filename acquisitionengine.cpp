@@ -165,30 +165,54 @@ void AcquisitionEngine::processDataQueue()
     if (!m_deviceOpened) return;
     if (m_dataQueue.empty()) return;
 
-    // 目前先只处理 stream 0
-    int streamIndex = 0;
+    // dataBlock 里的 stream 索引：0..(NumEnabledDataStreams-1)
+    int numStreams = m_rhxController->getNumEnabledDataStreams();
+    if (numStreams <= 0) return;
+
+    const int streamIdx0 = 0;          // 第一个启用的 data stream（A端）
+    const int streamIdx1 = (numStreams > 1) ? 1 : -1; // 第二个（B端），如果有的话
 
     while (!m_dataQueue.empty()) {
         RHXDataBlock *block = m_dataQueue.front();
         m_dataQueue.pop_front();
 
-        int samplesPerBlock = block->samplesPerDataBlock(); // 固定 128
-        QVector<uint32_t> timeStamps(samplesPerBlock);
-        QVector<QVector<int>> channelData(
+        int samplesPerBlock = block->samplesPerDataBlock(); // 一般 128
+
+        // ========= stream0: 仍然按你原来的方式输出 =========
+        QVector<uint32_t> timeStamps0(samplesPerBlock);
+        QVector<QVector<int>> channelData0(
             m_channelsPerStream,
             QVector<int>(samplesPerBlock));
 
         for (int t = 0; t < samplesPerBlock; ++t) {
-            timeStamps[t] = block->timeStamp(t);
+            timeStamps0[t] = block->timeStamp(t);
 
             for (int ch = 0; ch < m_channelsPerStream; ++ch) {
-                int value = block->amplifierData(streamIndex, ch, t);
-                channelData[ch][t] = value;
+                int value = block->amplifierData(streamIdx0, ch, t);
+                channelData0[ch][t] = value;
             }
         }
 
-        // 把这一块数据发出去（给 GUI 或实验流程模块）
-        emit newSamples(timeStamps, channelData);
+        emit newSamples(timeStamps0, channelData0);
+
+        // ========= stream2(B端): 如果有第二个 data stream，就再构造一份 =========
+        if (streamIdx1 >= 0) {
+            QVector<uint32_t> timeStamps2(samplesPerBlock);
+            QVector<QVector<int>> channelData2(
+                m_channelsPerStream,
+                QVector<int>(samplesPerBlock));
+
+            for (int t = 0; t < samplesPerBlock; ++t) {
+                timeStamps2[t] = block->timeStamp(t); // 时间一样
+
+                for (int ch = 0; ch < m_channelsPerStream; ++ch) {
+                    int value = block->amplifierData(streamIdx1, ch, t);
+                    channelData2[ch][t] = value;
+                }
+            }
+
+            emit newSamplesStream2(timeStamps2, channelData2);
+        }
 
         delete block;
     }

@@ -15,6 +15,7 @@
 
 // 后面我们先只用 stream 0，如果你打开多个 stream，再扩展即可
 
+
 class AcquisitionEngine : public QObject
 {
     Q_OBJECT
@@ -51,11 +52,14 @@ public:
     Controller* stimController() const { return m_stimController; }
 
 signals:
-    // 实时数据：目前先只发 stream 0 的 16 通道
-    // timeStamps: N 个时间戳（样点计数）
-    // channelData: [16][N] 的矩阵（raw int 数据，0~65535）
+    // 原来就有的：
     void newSamples(const QVector<uint32_t> &timeStamps,
                     const QVector<QVector<int>> &channelData);
+
+    // ⭐ 新增：专门给 stream2 用的信号（第二路 data stream）
+    void newSamplesStream2(const QVector<uint32_t> &timeStamps,
+                           const QVector<QVector<int>> &channelData);
+
 
     // 状态/错误信息
     void errorOccurred(const QString &msg);
