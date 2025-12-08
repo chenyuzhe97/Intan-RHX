@@ -207,44 +207,15 @@ void AcquisitionEngine::configureStim(const QString &electrodeName,
 {
     if (!m_deviceOpened || !m_stimController) return;
 
-    // ========= 0. 记录当前是否在 continuous 采集 =========
-    bool wasRunning = m_rhxController->isRunning();
-
-    if (wasRunning) {
-        // 先停掉 USB 定时器，避免 onUsbTimer 再来抢总线
-        m_usbTimer.stop();
-
-        // 清空本地队列（防止残留造成延迟）
-        while (!m_dataQueue.empty()) {
-            delete m_dataQueue.front();
-            m_dataQueue.pop_front();
-        }
-
-        // ========= 1. 从 infinite continuous run “退场” =========
-        // 思路：把模式改成非 continuous，然后跑一次有限步 run，
-        // 让之前的无限循环结束。
-        m_rhxController->setContinuousRunMode(false);
-        m_rhxController->setStimCmdMode(false);  // 交给 setStimSequenceParameters 再设置
-
-        m_rhxController->run();
-        // 等这次有限 run 完成（isRunning 变成 false）
-        while (m_rhxController->isRunning()) {
-            // 让 UI 和其它事件还能跑，避免假死
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
-        }
-
-        // 这里不调用 flush()，避免再进入潜在死循环
-        // 如果以后你真想把 USB FIFO 清空，可以再设计一个安全版的 flush
+    // ✅ 如果板子此刻正在 continuous run，就拒绝配置，避免把模式搞乱
+    if (m_rhxController->isRunning()) {
+        emit logMessage("警告：当前在连续采集中，不能修改刺激参数，请先停止采集再配置刺激。");
+        return;
     }
 
-
-    // 这里用你已有的 ElectrodeParameters
     ElectrodeParameters *ele =
         new ElectrodeParameters(electrodeName.toStdString());
 
-    // 你自己写的类里已经有这几个函数：
-    // SetStimulationTiming( postTriggerDelay, first, second, interphase/refractory...)
-    // 这里示例：postTriggerDelay = 0, refractory = 500 us（可改成参数）
     ele->SetStimulationTiming(0,
                               firstPhaseDuration_us,
                               secondPhaseDuration_us,
@@ -252,26 +223,13 @@ void AcquisitionEngine::configureStim(const QString &electrodeName,
     ele->SetStimulationAmplitude(firstPhaseAmplitude,
                                  secondPhaseAmplitude);
     ele->SetStimulationSource(triggerSource);
-    ele->numOfPulses = numPulses;   // 这句根据你 ElectrodeParameters 的实际字段名调整
+    ele->numOfPulses = numPulses;
 
-    // 载入参数，底层就是你之前贴出的 setStimSequenceParameters()
     m_stimController->setStimSequenceParameters(ele);
 
-    // ========= 3. 如果之前在跑 continuous，重新恢复 =========
-    if (wasRunning) {
-        m_rhxController->setContinuousRunMode(true);
-        m_rhxController->setStimCmdMode(true);
-        m_rhxController->run();
-
-        m_usbTimer.start();
-        emit logMessage(QStringLiteral("刺激参数已更新，并恢复连续采集（电极 %1）")
-                            .arg(electrodeName));
-    } else {
-        emit logMessage(QStringLiteral("刺激参数已更新（电极 %1）")
-                            .arg(electrodeName));
-    }
-
+    emit logMessage(QStringLiteral("已配置刺激电极 %1").arg(electrodeName));
 }
+
 
 void AcquisitionEngine::triggerStim(int triggerSource, bool on)
 {

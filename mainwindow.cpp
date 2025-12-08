@@ -183,6 +183,28 @@ void MainWindow::onOpenDevice()
 
 void MainWindow::onStart()
 {
+    if (!m_engine) return;
+
+    // 1️⃣ 先配置一次默认刺激波形（在没跑 continuous 时是安全的）
+    QString electrodeName = "A1";
+    int firstAmp_uA       = 100;
+    int secondAmp_uA      = 100;
+    int firstDur_us       = 500;
+    int secondDur_us      = 500;
+    int interDelay_us     = 500;
+    int numPulses         = 1;
+    int triggerSource     = 0;
+
+    m_engine->configureStim(electrodeName,
+                            firstAmp_uA,
+                            secondAmp_uA,
+                            firstDur_us,
+                            secondDur_us,
+                            interDelay_us,
+                            numPulses,
+                            triggerSource);
+
+    // 2️⃣ 再开始连续采集
     m_engine->startContinuousAcquisition();
 }
 
@@ -274,50 +296,11 @@ void MainWindow::onChannelChanged(int index)
     m_buffer.clear();
     m_series->clear();
 }
-
 void MainWindow::onStimOnce()
 {
-    if (!m_engine) {
-        appendLog("刺激失败：AcquisitionEngine 未初始化");
-        return;
-    }
+    if (!m_engine) return;
 
-    // 这里先假设你已经在“开始采集”状态下（推荐这样用）
-    // 如果你想强制在停止状态下刺激，也可以在这里先 stop：
-    // m_engine->stopAcquisition();
-
-    // ===== 1. 配置刺激参数 =====
-    // 对应你最初 main.cpp 里的：
-    // ele->SetStimulationTiming(0,500,500,500);
-    // ele->SetStimulationAmplitude(100,100);
-    // ele->SetStimulationSource(0);
-    //
-    // 我们在 configureStim 里面就做类似事情。
-
-    QString electrodeName = "A1";       // ⭐ 测试用：A 端第1个电极
-    int firstAmp_uA       = 100;        // 第一相 100 µA
-    int secondAmp_uA      = 100;        // 第二相 100 µA（对称双相）
-    int firstDur_us       = 500;        // 500 µs
-    int secondDur_us      = 500;        // 500 µs
-    int interDelay_us     = 500;        // 暂时当作 refractory / 延迟
-    int numPulses         = 1;          // 单脉冲
-    int triggerSource     = 0;          // 和你原来 stimTrigger(0,true) 一致
-
-    m_engine->configureStim(electrodeName,
-                            firstAmp_uA,
-                            secondAmp_uA,
-                            firstDur_us,
-                            secondDur_us,
-                            interDelay_us,
-                            numPulses,
-                            triggerSource);
-
-    appendLog("已配置 A1 刺激参数");
-
-    // ===== 2. 发送一次触发 =====
+    int triggerSource = 0;
     m_engine->triggerStim(triggerSource, true);
-    appendLog("已触发刺激 (trigger = 0, A1)");
-
-    // 此时如果采集正在运行，你应该能在波形上看到一坨伪迹 ⚡
+    appendLog("已触发刺激（使用当前已配置波形，trigger=0）");
 }
-
