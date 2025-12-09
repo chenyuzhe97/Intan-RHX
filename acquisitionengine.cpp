@@ -263,3 +263,37 @@ void AcquisitionEngine::triggerStim(int triggerSource, bool on)
     // 直接用你已有的接口
     m_stimController->stimTrigger(triggerSource, on);
 }
+
+void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
+                                          int amplitude_uA,
+                                          int numPulses,
+                                          int triggerSource)
+{
+    if (!m_deviceOpened || !m_stimController) return;
+    if (amplitude_uA <= 0 || numPulses <= 0) return;
+
+    // 这里先固定一个脉冲形状，你之后也可以让算法一起给
+    int firstDur_us   = 500;
+    int secondDur_us  = 500;
+    int interphase_us = 500;
+
+    // 1) 用你已有的接口配置刺激序列
+    configureStim(electrodeName,
+                  amplitude_uA,   // firstPhaseAmplitude
+                  amplitude_uA,   // secondPhaseAmplitude
+                  firstDur_us,
+                  secondDur_us,
+                  interphase_us,
+                  numPulses,
+                  triggerSource);
+
+    // 2) 触发一次刺激
+    m_stimController->stimTrigger(triggerSource, true);
+
+    emit logMessage(QStringLiteral("自适应刺激：%1, 幅度=%2 uA, 脉冲数=%3, trigger=%4")
+                        .arg(electrodeName)
+                        .arg(amplitude_uA)
+                        .arg(numPulses)
+                        .arg(triggerSource));
+}
+

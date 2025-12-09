@@ -6,6 +6,7 @@ ABAlgorithm::ABAlgorithm(QObject *parent)
 {
 }
 
+
 ABAlgorithm::Result ABAlgorithm::analyzeEpoch(
     int phaseIndex,
     const QVector<uint32_t> &timeStamps,
@@ -22,7 +23,7 @@ ABAlgorithm::Result ABAlgorithm::analyzeEpoch(
 
     res.channelRms.resize(numCh);
 
-    // 1. 计算每个通道 RMS
+    // 1) 每通道 RMS
     for (int ch = 0; ch < numCh; ++ch) {
         const auto &data = channelData[ch];
         if (data.isEmpty()) {
@@ -40,13 +41,27 @@ ABAlgorithm::Result ABAlgorithm::analyzeEpoch(
         res.channelRms[ch] = rms;
     }
 
-    // 2. 全通道平均 RMS（非常简单的一个 global 指标）
+    // 2) 全通道平均 RMS
     double sum = 0.0;
     for (double v : res.channelRms) sum += v;
     res.globalRms = sum / double(numCh);
 
-    // 3. VERY 简单的决策：global RMS > 阈值 就建议刺激
-    res.needStim = (res.globalRms > m_globalRmsThreshold);
+    // 3) VERY 简单的规则：global RMS > 阈值 ⇒ 刺激
+    if (res.globalRms > m_globalRmsThreshold) {
+        res.needStim = true;
+
+        // 把 globalRms 直接当成 uA，再夹在 [min,max] 区间
+        int amp = int(res.globalRms);
+        if (amp < m_minAmp_uA) amp = m_minAmp_uA;
+        if (amp > m_maxAmp_uA) amp = m_maxAmp_uA;
+
+        res.suggestedAmplitude_uA = amp;
+        res.suggestedNumPulses    = 1;    // 先固定 1 个，你之后可以按算法改
+    } else {
+        res.needStim = false;
+        res.suggestedAmplitude_uA = 0;
+        res.suggestedNumPulses    = 0;
+    }
 
     return res;
 }

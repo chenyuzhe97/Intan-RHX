@@ -47,6 +47,12 @@ public:
     // 触发某个 triggerSource 的刺激
     void triggerStim(int triggerSource, bool on);
 
+    // ⭐ 新增：根据算法结果构造刺激并触发
+    void applyAdaptiveStim(const QString &electrodeName,
+                           int amplitude_uA,
+                           int numPulses,
+                           int triggerSource);
+
     // 暴露底层指针，方便以后复杂操作
     RHXController* rhx() const { return m_rhxController; }
     Controller* stimController() const { return m_stimController; }

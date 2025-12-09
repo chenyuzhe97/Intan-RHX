@@ -301,43 +301,49 @@ void MainWindow::onABEpochReady(int phaseIndex,
 
     if (!m_abAlgo) return;
 
-    // 1️⃣ 调用算法模块分析
+    // 1️⃣ 调算法
     auto res = m_abAlgo->analyzeEpoch(phaseIndex, timeStamps, channelData);
 
-    appendLog(QString("  全通道平均 RMS = %1 µV (阈值=%2)")
-                  .arg(res.globalRms, 0, 'f', 2)
-                  .arg(50.0, 0, 'f', 2));  // 你可以从 algo 中读 threshold
+    appendLog(QString("  全通道平均 RMS = %1 µV").arg(res.globalRms, 0, 'f', 2));
 
-    // 也可以顺便把每个通道的 RMS 打印一下（先简单地只打印前 8 个）
-    for (int ch = 0; ch < qMin(numCh, 8); ++ch) {
-        appendLog(QString("    CH%1: RMS = %2 µV")
-                      .arg(ch)
-                      .arg(res.channelRms[ch], 0, 'f', 2));
-    }
-
-    // 2️⃣ 根据算法结果决定是否刺激
-    if (res.needStim && m_engine) {
-
-        int trigger = 0;
-        if (phaseIndex == 0) {
-            // PhaseA：A 端 → 刺激 B 端
-            trigger = 1;  // 假设 trigger 1 对应 B 电极
-        } else {
-            // PhaseB：B 端 → 刺激 A 端
-            trigger = 0;  // trigger 0 对应 A 电极
-        }
-
-        m_engine->triggerStim(trigger, true);
-
-        appendLog(QString("%1: 算法判定需要刺激，触发 trigger=%2")
-                      .arg(phaseName).arg(trigger));
-
-    } else {
+    // 2️⃣ 决定是否刺激
+    if (!res.needStim || res.suggestedAmplitude_uA <= 0) {
         appendLog(QString("%1: 算法判定不刺激").arg(phaseName));
+        return;
     }
+
+    if (!m_engine) return;
+
+    // 3️⃣ 根据 phase 决定刺激目标和 trigger
+    QString targetElectrode;
+    int triggerSource = 0;
+
+    if (phaseIndex == 0) {
+        // PhaseA：看 A 端 → 刺激 B 端
+        targetElectrode = "B1";   // 这里先写死，你之后可以做成配置
+        triggerSource   = 1;      // 你之前约定 trigger 1 刺激 B
+    } else {
+        // PhaseB：看 B 端 → 刺激 A 端
+        targetElectrode = "A1";
+        triggerSource   = 0;      // trigger 0 刺激 A
+    }
+
+    int numPulses = (res.suggestedNumPulses > 0)
+                        ? res.suggestedNumPulses
+                        : 1;
+
+    appendLog(QString("%1: 算法建议刺激 %2, 幅度=%3 uA, 脉冲数=%4")
+                  .arg(phaseName)
+                  .arg(targetElectrode)
+                  .arg(res.suggestedAmplitude_uA)
+                  .arg(numPulses));
+
+    // 4️⃣ 调用引擎执行自适应刺激
+    m_engine->applyAdaptiveStim(targetElectrode,
+                                res.suggestedAmplitude_uA,
+                                numPulses,
+                                triggerSource);
 }
-
-
 
 
 void MainWindow::handleNewSamples(const QVector<uint32_t> &timeStamps,

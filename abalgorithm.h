@@ -17,19 +17,23 @@ public:
     explicit ABAlgorithm(QObject *parent = nullptr);
 
     struct Result {
-        bool   needStim = false;           // 是否建议刺激
+        bool   needStim = false;          // 是否建议刺激
         double globalRms = 0.0;           // 全通道平均 RMS
-        QVector<double> channelRms;       // 每个通道的 RMS
+        QVector<double> channelRms;       // 每通道 RMS
+
+        // ⭐ 新增：建议的刺激参数（单位都用 uA / 脉冲个数）
+        int    suggestedAmplitude_uA = 0; // 建议刺激电流幅度
+        int    suggestedNumPulses    = 1; // 建议脉冲个数
     };
 
-    // 核心接口：给它一个 epoch，它给你一个决策结果
     Result analyzeEpoch(int phaseIndex,
                         const QVector<uint32_t> &timeStamps,
                         const QVector<QVector<int>> &channelData);
 
-    // 简单一点：你可以设置一个全局 RMS 阈值
     void setThreshold(double thr) { m_globalRmsThreshold = thr; }
 
 private:
-    double m_globalRmsThreshold = 50.0;   // µV，粗暴一点先全局一个
+    double m_globalRmsThreshold = 50.0;   // µV
+    int    m_minAmp_uA = 20;              // 最小刺激幅度
+    int    m_maxAmp_uA = 200;             // 最大刺激幅度
 };
