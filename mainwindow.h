@@ -9,6 +9,7 @@
 #include <QLabel>
 
 #include "acquisitionengine.h"
+#include "abalgorithm.h"
 #include "experimentcontrollerab.h"
 
 #include <QtCharts/QChartView>
@@ -64,6 +65,7 @@ private:
     QPlainTextEdit   *m_logView = nullptr;
 
     AcquisitionEngine   *m_engine      = nullptr;
+    ABAlgorithm *m_abAlgo = nullptr;
     ExperimentControllerAB *m_experiment = nullptr;
 
     // ===== 单通道图（你原来的那套） =====

@@ -139,6 +139,7 @@ SOURCES += main.cpp \
     GUI/Widgets/controlpanel.cpp \
     GUI/Widgets/spectrogramplot.cpp \
     GUI/Windows/viewfilterswindow.cpp \
+    abalgorithm.cpp \
     acquisitionengine.cpp \
     controller.cpp \
     electrodeparameters.cpp \
@@ -265,6 +266,7 @@ HEADERS += \
     GUI/Widgets/controlpanel.h \
     GUI/Widgets/spectrogramplot.h \
     GUI/Windows/viewfilterswindow.h \
+    abalgorithm.h \
     acquisitionengine.h \
     controller.h \
     electrodeparameters.h \

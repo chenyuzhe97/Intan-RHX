@@ -11,6 +11,8 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_engine     = new AcquisitionEngine(this);
     m_experiment = new ExperimentControllerAB(m_engine, this);
+    m_abAlgo     = new ABAlgorithm(this);
+
 
     connect(m_engine, &AcquisitionEngine::newSamples,
             this,      &MainWindow::handleNewSamples);
@@ -290,42 +292,51 @@ void MainWindow::onABEpochReady(int phaseIndex,
     int numCh = channelData.size();
     int N     = timeStamps.size();
 
-    QString phaseName = (phaseIndex == 0) ? "PhaseA(A 端 stream0)" : "PhaseB(B 端 stream2)";
+    QString phaseName = (phaseIndex == 0)
+                            ? "PhaseA (A 端 stream0)"
+                            : "PhaseB (B 端 stream2)";
+
     appendLog(QString("%1: 收到一个 epoch，通道数=%2, 样本点数=%3")
                   .arg(phaseName).arg(numCh).arg(N));
 
-    // ===== 示例1：你可以在这里对“整个 5s 所有通道”做处理 =====
-    // 下面这个只是示例：算每个通道的 RMS
-    for (int ch = 0; ch < numCh; ++ch) {
-        const auto &data = channelData[ch];
-        if (data.isEmpty()) continue;
+    if (!m_abAlgo) return;
 
-        double sumSq = 0.0;
-        for (int i = 0; i < data.size(); ++i) {
-            double uV = (double(data[i]) - 32768.0) * 0.195;
-            sumSq += uV * uV;
-        }
-        double rms = std::sqrt(sumSq / double(data.size()));
+    // 1️⃣ 调用算法模块分析
+    auto res = m_abAlgo->analyzeEpoch(phaseIndex, timeStamps, channelData);
 
-        appendLog(QString("  %1 CH%2: RMS = %3 µV")
-                      .arg(phaseIndex == 0 ? "A" : "B")
+    appendLog(QString("  全通道平均 RMS = %1 µV (阈值=%2)")
+                  .arg(res.globalRms, 0, 'f', 2)
+                  .arg(50.0, 0, 'f', 2));  // 你可以从 algo 中读 threshold
+
+    // 也可以顺便把每个通道的 RMS 打印一下（先简单地只打印前 8 个）
+    for (int ch = 0; ch < qMin(numCh, 8); ++ch) {
+        appendLog(QString("    CH%1: RMS = %2 µV")
                       .arg(ch)
-                      .arg(rms, 0, 'f', 2));
+                      .arg(res.channelRms[ch], 0, 'f', 2));
     }
 
-    // ===== 示例2：这里根据分析结果决定要不要刺激 =====
-    // 例如：
-    /*
-    bool needStim = yourAlgorithm(phaseIndex, timeStamps, channelData);
+    // 2️⃣ 根据算法结果决定是否刺激
+    if (res.needStim && m_engine) {
 
-    if (needStim) {
-        int trigger = (phaseIndex == 0) ? 1 : 0; // A phase → 刺激 B, B phase → 刺激 A
+        int trigger = 0;
+        if (phaseIndex == 0) {
+            // PhaseA：A 端 → 刺激 B 端
+            trigger = 1;  // 假设 trigger 1 对应 B 电极
+        } else {
+            // PhaseB：B 端 → 刺激 A 端
+            trigger = 0;  // trigger 0 对应 A 电极
+        }
+
         m_engine->triggerStim(trigger, true);
+
         appendLog(QString("%1: 算法判定需要刺激，触发 trigger=%2")
-                  .arg(phaseName).arg(trigger));
+                      .arg(phaseName).arg(trigger));
+
+    } else {
+        appendLog(QString("%1: 算法判定不刺激").arg(phaseName));
     }
-    */
 }
+
 
 
 
@@ -466,6 +477,8 @@ void MainWindow::onChannelChanged(int index)
     m_buffer.clear();
     m_series->clear();
 }
+
+
 void MainWindow::onStimOnce()
 {
     if (!m_engine) return;
