@@ -221,7 +221,6 @@ void AcquisitionEngine::processDataQueue()
 }
 
 // ====== 刺激相关接口 ======
-
 void AcquisitionEngine::configureStim(const QString &electrodeName,
                                       int firstPhaseAmplitude,
                                       int secondPhaseAmplitude,

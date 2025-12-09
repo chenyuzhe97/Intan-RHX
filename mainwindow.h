@@ -29,6 +29,10 @@ private slots:
     void onStart();
     void onStop();
 
+    void onABEpochReady(int phaseIndex,
+                        const QVector<uint32_t> &timeStamps,
+                        const QVector<QVector<int>> &channelData);
+
     void handleNewSamples(const QVector<uint32_t> &timeStamps,
                           const QVector<QVector<int>> &channelData);
 

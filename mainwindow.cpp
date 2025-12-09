@@ -5,41 +5,29 @@
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-
     setupUi();
     setupSinglePlot();
-    setupStream2Plot();    // ⭐ 新增：stream2 多通道
+    setupStream2Plot();
 
-
-    m_engine = new AcquisitionEngine(this);
+    m_engine     = new AcquisitionEngine(this);
     m_experiment = new ExperimentControllerAB(m_engine, this);
 
     connect(m_engine, &AcquisitionEngine::newSamples,
             this,      &MainWindow::handleNewSamples);
+    connect(m_engine, &AcquisitionEngine::newSamplesStream2,
+            this,      &MainWindow::handleNewSamplesStream2);
     connect(m_engine, &AcquisitionEngine::errorOccurred,
             this,      &MainWindow::handleError);
     connect(m_engine, &AcquisitionEngine::logMessage,
             this,      &MainWindow::handleLog);
 
-    // ⭐ 连接新的信号到新的槽
-    connect(m_engine, &AcquisitionEngine::newSamplesStream2,
-            this,      &MainWindow::handleNewSamplesStream2);
-
-
     connect(m_experiment, &ExperimentControllerAB::logMessage,
             this,         &MainWindow::handleLog);
 
-    connect(m_experiment, &ExperimentControllerAB::epochFinished,
-            this,
-            [this](int phaseIdx, double rms, bool stimulated) {
-                QString phaseName = (phaseIdx == 0) ? "PhaseA(A→B)" : "PhaseB(B→A)";
-                appendLog(QString("%1: RMS=%2 µV, %3")
-                              .arg(phaseName)
-                              .arg(rms, 0, 'f', 2)
-                              .arg(stimulated ? "已刺激" : "未刺激"));
-            });
+    // ⭐ 关键：把 AB 每个 epoch 的所有数据接到这里
+    connect(m_experiment, &ExperimentControllerAB::epochReady,
+            this,         &MainWindow::onABEpochReady);
 }
-
 
 
 MainWindow::~MainWindow()
@@ -266,50 +254,22 @@ void MainWindow::onStart()
 {
     if (!m_engine) return;
 
-    // ★ 预配置 A/B 刺激波形 ★
-    // 假设：
-    //   - triggerSource 0 → 刺激 A 端（比如 A1）
-    //   - triggerSource 1 → 刺激 B 端（比如 B1）
+    // 1）配置好你要的刺激波形（如果暂时只想先看数据，可以先注释掉）
+    /*
+    m_engine->configureStim("A1", 100, 100, 500, 500, 500, 1, 0); // trigger 0 给 A
+    m_engine->configureStim("B1", 100, 100, 500, 500, 500, 1, 1); // trigger 1 给 B
+    */
 
-    // 配置 A 端刺激（对应 PhaseB 时用）
-    m_engine->configureStim("A1",
-                            100, 100,   // 幅值 uA
-                            500, 500,   // 两相时长 us
-                            500,        // interPhase/refractory
-                            1,          // numPulses
-                            0);         // triggerSource 0 -> 刺激 A
-
-    // 配置 B 端刺激（对应 PhaseA 时用）
-    m_engine->configureStim("B1",
-                            100, 100,
-                            500, 500,
-                            500,
-                            1,
-                            1);         // triggerSource 1 -> 刺激 B
-
-    // 启动连续采集
+    // 2）启动连续采集
     m_engine->startContinuousAcquisition();
 
-    // 配置 A↔B 闭环参数
+    // 3）启动 AB epoch 控制器（比如 5s）
     if (m_experiment) {
-        // 比如：A 对应 CH0，B 对应 CH1（你可以根据实际情况调整）
-        m_experiment->setChannels(0, 1);
-
-        // epoch 长度（你可以先用 5 秒，之后改成 30 秒）
         m_experiment->setEpochDuration(5.0);
-
-        // 阈值（先设一样，之后可以分开调）
-        m_experiment->setRmsThresholds(50.0, 50.0);
-
-        // PhaseA：看 A 通道 → RMS_A 超阈值 → 用 trigger 1 刺激 B
-        // PhaseB：看 B 通道 → RMS_B 超阈值 → 用 trigger 0 刺激 A
-        m_experiment->setTriggers(
-            1,  // trigWhenAStimB
-            0   // trigWhenBStimA
-            );
-
         m_experiment->start();
     }
+
+    appendLog("开始采集 + AB 5s epoch 采集");
 }
 
 void MainWindow::onStop()
@@ -320,7 +280,53 @@ void MainWindow::onStop()
     if (m_engine) {
         m_engine->stopAcquisition();
     }
+    appendLog("已停止采集");
 }
+
+void MainWindow::onABEpochReady(int phaseIndex,
+                                const QVector<uint32_t> &timeStamps,
+                                const QVector<QVector<int>> &channelData)
+{
+    int numCh = channelData.size();
+    int N     = timeStamps.size();
+
+    QString phaseName = (phaseIndex == 0) ? "PhaseA(A 端 stream0)" : "PhaseB(B 端 stream2)";
+    appendLog(QString("%1: 收到一个 epoch，通道数=%2, 样本点数=%3")
+                  .arg(phaseName).arg(numCh).arg(N));
+
+    // ===== 示例1：你可以在这里对“整个 5s 所有通道”做处理 =====
+    // 下面这个只是示例：算每个通道的 RMS
+    for (int ch = 0; ch < numCh; ++ch) {
+        const auto &data = channelData[ch];
+        if (data.isEmpty()) continue;
+
+        double sumSq = 0.0;
+        for (int i = 0; i < data.size(); ++i) {
+            double uV = (double(data[i]) - 32768.0) * 0.195;
+            sumSq += uV * uV;
+        }
+        double rms = std::sqrt(sumSq / double(data.size()));
+
+        appendLog(QString("  %1 CH%2: RMS = %3 µV")
+                      .arg(phaseIndex == 0 ? "A" : "B")
+                      .arg(ch)
+                      .arg(rms, 0, 'f', 2));
+    }
+
+    // ===== 示例2：这里根据分析结果决定要不要刺激 =====
+    // 例如：
+    /*
+    bool needStim = yourAlgorithm(phaseIndex, timeStamps, channelData);
+
+    if (needStim) {
+        int trigger = (phaseIndex == 0) ? 1 : 0; // A phase → 刺激 B, B phase → 刺激 A
+        m_engine->triggerStim(trigger, true);
+        appendLog(QString("%1: 算法判定需要刺激，触发 trigger=%2")
+                  .arg(phaseName).arg(trigger));
+    }
+    */
+}
+
 
 
 void MainWindow::handleNewSamples(const QVector<uint32_t> &timeStamps,

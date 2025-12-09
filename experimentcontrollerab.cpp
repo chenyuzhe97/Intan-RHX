@@ -1,8 +1,6 @@
 #include "experimentcontrollerab.h"
 #include "acquisitionengine.h"
 
-#include <QtMath>
-
 ExperimentControllerAB::ExperimentControllerAB(AcquisitionEngine *engine,
                                                QObject *parent)
     : QObject(parent),
@@ -11,8 +9,13 @@ ExperimentControllerAB::ExperimentControllerAB(AcquisitionEngine *engine,
     connect(&m_epochTimer, &QTimer::timeout,
             this, &ExperimentControllerAB::onEpochTimeout);
 
+    // ⭐ A 端数据：来自 AcquisitionEngine::newSamples（stream0）
     connect(m_engine, &AcquisitionEngine::newSamples,
-            this,       &ExperimentControllerAB::onNewSamples);
+            this,      &ExperimentControllerAB::onNewSamplesStream0);
+
+    // ⭐ B 端数据：来自 AcquisitionEngine::newSamplesStream2（stream2）
+    connect(m_engine, &AcquisitionEngine::newSamplesStream2,
+            this,      &ExperimentControllerAB::onNewSamplesStream2);
 }
 
 void ExperimentControllerAB::start()
@@ -20,17 +23,21 @@ void ExperimentControllerAB::start()
     if (m_running) return;
 
     m_running = true;
-    m_phase   = PhaseA;
-    m_sumSquares = 0.0;
-    m_count      = 0;
+    m_phase   = PhaseA;  // 从 A 端开始
 
-    int intervalMs = int(m_epochDurationSec * 1000.0);
-    m_epochTimer.start(intervalMs);
+    // 清空 A/B 缓存
+    m_tsBufferA.clear();
+    m_chBuffersA.clear();
+    m_numChannelsA = 0;
+
+    m_tsBufferB.clear();
+    m_chBuffersB.clear();
+    m_numChannelsB = 0;
+
+    m_epochTimer.start(int(m_epochDurationSec * 1000.0));
 
     emit logMessage(
-        QStringLiteral("A↔B 闭环已启动：PhaseA→CH%1, PhaseB→CH%2, epoch=%3 s")
-            .arg(m_channelA)
-            .arg(m_channelB)
+        QStringLiteral("AB epoch 采集已启动：先从 A 端 (stream0) 开始，每个 epoch = %1 s")
             .arg(m_epochDurationSec, 0, 'f', 2));
 }
 
@@ -40,16 +47,16 @@ void ExperimentControllerAB::stop()
 
     m_running = false;
     m_epochTimer.stop();
-    m_sumSquares = 0.0;
-    m_count      = 0;
 
-    emit logMessage("A↔B 闭环已停止");
-}
+    m_tsBufferA.clear();
+    m_chBuffersA.clear();
+    m_numChannelsA = 0;
 
-void ExperimentControllerAB::setChannels(int chA, int chB)
-{
-    m_channelA = chA;
-    m_channelB = chB;
+    m_tsBufferB.clear();
+    m_chBuffersB.clear();
+    m_numChannelsB = 0;
+
+    emit logMessage("AB epoch 采集已停止");
 }
 
 void ExperimentControllerAB::setEpochDuration(double seconds)
@@ -60,103 +67,142 @@ void ExperimentControllerAB::setEpochDuration(double seconds)
     }
 }
 
-void ExperimentControllerAB::setRmsThresholds(double thrA, double thrB)
-{
-    m_rmsThrA = thrA;
-    m_rmsThrB = thrB;
-}
+// ================= A 端数据（stream0） =================
 
-void ExperimentControllerAB::setTriggers(int trigWhenAStimB,
-                                         int trigWhenBStimA)
-{
-    m_triggerWhenAStimB = trigWhenAStimB;
-    m_triggerWhenBStimA = trigWhenBStimA;
-}
-
-void ExperimentControllerAB::onNewSamples(const QVector<uint32_t> &timeStamps,
-                                          const QVector<QVector<int>> &channelData)
+void ExperimentControllerAB::onNewSamplesStream0(
+    const QVector<uint32_t> &timeStamps,
+    const QVector<QVector<int>> &channelData)
 {
     if (!m_running) return;
-    if (channelData.isEmpty()) return;
-    if (timeStamps.isEmpty()) return;
+    if (m_phase != PhaseA) {
+        // 当前不是 A 阶段，可以直接忽略 A 端数据，或者也可以缓存备用
+        return;
+    }
+
+    if (timeStamps.isEmpty() || channelData.isEmpty()) return;
 
     int numCh = channelData.size();
-
-    int ch = (m_phase == PhaseA) ? m_channelA : m_channelB;
-    if (ch < 0 || ch >= numCh) return;
-
-    const QVector<int> &chData = channelData[ch];
-    int N = qMin(chData.size(), timeStamps.size());
+    int N     = timeStamps.size();
     if (N <= 0) return;
 
-    const int decim = 2;  // 适当下采样一丢丢
+    // 第一次收到 A 端数据时，初始化通道缓存
+    if (m_numChannelsA == 0) {
+        m_numChannelsA = numCh;
+        m_chBuffersA.resize(m_numChannelsA);
+    } else if (numCh != m_numChannelsA) {
+        emit logMessage("警告：A 端数据块通道数变化，忽略本块");
+        return;
+    }
 
-    for (int i = 0; i < N; i += decim) {
-        int raw = chData[i];
+    // 追加时间戳
+    m_tsBufferA.reserve(m_tsBufferA.size() + N);
+    for (int i = 0; i < N; ++i) {
+        m_tsBufferA.append(timeStamps[i]);
+    }
 
-        double uV = (double(raw) - 32768.0) * 0.195;
-        m_sumSquares += uV * uV;
-        m_count++;
+    // 追加各通道数据
+    for (int ch = 0; ch < m_numChannelsA; ++ch) {
+        const QVector<int> &src = channelData[ch];
+        int Nc = qMin(N, src.size());
+        if (Nc <= 0) continue;
+
+        QVector<int> &dst = m_chBuffersA[ch];
+        dst.reserve(dst.size() + Nc);
+        for (int i = 0; i < Nc; ++i) {
+            dst.append(src[i]);
+        }
     }
 }
+
+// ================= B 端数据（stream2） =================
+
+void ExperimentControllerAB::onNewSamplesStream2(
+    const QVector<uint32_t> &timeStamps,
+    const QVector<QVector<int>> &channelData)
+{
+    if (!m_running) return;
+    if (m_phase != PhaseB) {
+        // 当前不是 B 阶段，可以忽略 B 端数据
+        return;
+    }
+
+    if (timeStamps.isEmpty() || channelData.isEmpty()) return;
+
+    int numCh = channelData.size();
+    int N     = timeStamps.size();
+    if (N <= 0) return;
+
+    // 第一次收到 B 端数据时，初始化通道缓存
+    if (m_numChannelsB == 0) {
+        m_numChannelsB = numCh;
+        m_chBuffersB.resize(m_numChannelsB);
+    } else if (numCh != m_numChannelsB) {
+        emit logMessage("警告：B 端数据块通道数变化，忽略本块");
+        return;
+    }
+
+    // 追加时间戳
+    m_tsBufferB.reserve(m_tsBufferB.size() + N);
+    for (int i = 0; i < N; ++i) {
+        m_tsBufferB.append(timeStamps[i]);
+    }
+
+    // 追加各通道数据
+    for (int ch = 0; ch < m_numChannelsB; ++ch) {
+        const QVector<int> &src = channelData[ch];
+        int Nc = qMin(N, src.size());
+        if (Nc <= 0) continue;
+
+        QVector<int> &dst = m_chBuffersB[ch];
+        dst.reserve(dst.size() + Nc);
+        for (int i = 0; i < Nc; ++i) {
+            dst.append(src[i]);
+        }
+    }
+}
+
+// ================= epoch 到点：发数据 + 切换 Phase =================
 
 void ExperimentControllerAB::onEpochTimeout()
 {
     if (!m_running) return;
 
-    if (m_count == 0) {
-        emit logMessage("本 epoch 没有数据，跳过 RMS 计算");
-        return;
-    }
-
-    double rms = qSqrt(m_sumSquares / double(m_count));
-
-    bool stimulated = false;
-
     if (m_phase == PhaseA) {
-        // PhaseA：看 A 通道，如果 RMS_A > 阈值A → 刺激 B
-        if (rms > m_rmsThrA && m_engine) {
-            m_engine->triggerStim(m_triggerWhenAStimB, true);
-            stimulated = true;
-            emit logMessage(
-                QString("PhaseA: CH%1 RMS=%2 µV > %3, 刺激B(trigger=%4)")
-                    .arg(m_channelA)
-                    .arg(rms, 0, 'f', 2)
-                    .arg(m_rmsThrA, 0, 'f', 2)
-                    .arg(m_triggerWhenAStimB));
+        if (!m_tsBufferA.isEmpty() && !m_chBuffersA.isEmpty()) {
+            emit logMessage(QStringLiteral("PhaseA 结束：A 端 epoch 就绪，样本数 = %1")
+                                .arg(m_tsBufferA.size()));
+
+            // ⭐ 把 A 端这 5s 的全部数据丢给外部
+            emit epochReady(0, m_tsBufferA, m_chBuffersA);
         } else {
-            emit logMessage(
-                QString("PhaseA: CH%1 RMS=%2 µV ≤ %3, 未刺激")
-                    .arg(m_channelA)
-                    .arg(rms, 0, 'f', 2)
-                    .arg(m_rmsThrA, 0, 'f', 2));
+            emit logMessage("PhaseA 结束：A 端本 epoch 无数据");
         }
-    } else {
-        // PhaseB：看 B 通道，如果 RMS_B > 阈值B → 刺激 A
-        if (rms > m_rmsThrB && m_engine) {
-            m_engine->triggerStim(m_triggerWhenBStimA, true);
-            stimulated = true;
-            emit logMessage(
-                QString("PhaseB: CH%1 RMS=%2 µV > %3, 刺激A(trigger=%4)")
-                    .arg(m_channelB)
-                    .arg(rms, 0, 'f', 2)
-                    .arg(m_rmsThrB, 0, 'f', 2)
-                    .arg(m_triggerWhenBStimA));
+
+        // 清空，为下一次 A-phase 准备
+        m_tsBufferA.clear();
+        for (auto &buf : m_chBuffersA) buf.clear();
+
+        // 切到 B-phase
+        m_phase = PhaseB;
+        emit logMessage("切换到 PhaseB（B 端 stream2）");
+
+    } else { // PhaseB
+        if (!m_tsBufferB.isEmpty() && !m_chBuffersB.isEmpty()) {
+            emit logMessage(QStringLiteral("PhaseB 结束：B 端 epoch 就绪，样本数 = %1")
+                                .arg(m_tsBufferB.size()));
+
+            // ⭐ 把 B 端这 5s 的全部数据丢给外部
+            emit epochReady(1, m_tsBufferB, m_chBuffersB);
         } else {
-            emit logMessage(
-                QString("PhaseB: CH%1 RMS=%2 µV ≤ %3, 未刺激")
-                    .arg(m_channelB)
-                    .arg(rms, 0, 'f', 2)
-                    .arg(m_rmsThrB, 0, 'f', 2));
+            emit logMessage("PhaseB 结束：B 端本 epoch 无数据");
         }
+
+        // 清空，为下一次 B-phase 准备
+        m_tsBufferB.clear();
+        for (auto &buf : m_chBuffersB) buf.clear();
+
+        // 切回 A-phase
+        m_phase = PhaseA;
+        emit logMessage("切换到 PhaseA（A 端 stream0）");
     }
-
-    emit epochFinished((m_phase == PhaseA) ? 0 : 1, rms, stimulated);
-
-    // 为下一个 epoch 清零累积
-    m_sumSquares = 0.0;
-    m_count      = 0;
-
-    // 切换 Phase：A ↔ B 互换
-    m_phase = (m_phase == PhaseA) ? PhaseB : PhaseA;
 }

@@ -2,14 +2,16 @@
 
 #include <QObject>
 #include <QTimer>
+#include <QVector>
 
 class AcquisitionEngine;
 
 /**
- * A↔B 双端口交替闭环控制器：
- * - Phase A：采集通道 channelA，计算 RMS_A，若 > 阈值A → 刺激 B（triggerWhenAStimB）
- * - Phase B：采集通道 channelB，计算 RMS_B，若 > 阈值B → 刺激 A（triggerWhenBStimA）
- * - Phase A/B 轮流切换
+ * AB 闭环的“epoch 数据打包器”：
+ * - PhaseA：采集 A 端（stream0）所有通道的 1 个 epoch（例如 5 s）
+ * - PhaseB：采集 B 端（stream2）所有通道的 1 个 epoch（例如 5 s）
+ * - 每个 epoch 结束时，发出信号，把那一段的 timeStamps + channelData 整包给你
+ * - 不在内部做算法和刺激决策，这些都交给外部（比如 MainWindow）处理
  */
 class ExperimentControllerAB : public QObject
 {
@@ -18,58 +20,57 @@ public:
     explicit ExperimentControllerAB(AcquisitionEngine *engine,
                                     QObject *parent = nullptr);
 
-    void start();   // 启动 A↔B 闭环
-    void stop();    // 停止闭环
+    void start();
+    void stop();
 
-    // 设置 A/B 两个数据通道索引（在 channelData 里的索引）
-    void setChannels(int chA, int chB);
-
-    // 设置 epoch 时长（秒），每个 epoch 完成后切换一次 A/B
+    // 设置每个 epoch 的长度（秒），比如 5s 或 30s
     void setEpochDuration(double seconds);
 
-    // A/B 各自 RMS 阈值（单位 µV）
-    void setRmsThresholds(double thrA, double thrB);
-
-    // 在 PhaseA 结束时，若超阈值 → 用哪个 triggerSource 刺激 B
-    // 在 PhaseB 结束时，若超阈值 → 用哪个 triggerSource 刺激 A
-    void setTriggers(int trigWhenAStimB, int trigWhenBStimA);
-
 signals:
+    // 每个 epoch 完成时发出：
+    //  phaseIndex: 0 = PhaseA（A 端，stream0），1 = PhaseB（B 端，stream2）
+    //  timeStamps.size() == N
+    //  channelData.size() == numChannels
+    //  channelData[ch].size() == N
+    void epochReady(int phaseIndex,
+                    const QVector<uint32_t> &timeStamps,
+                    const QVector<QVector<int>> &channelData);
+
     void logMessage(const QString &msg);
-    void epochFinished(int phaseIndex, double rms, bool stimulated);
-    // phaseIndex: 0 = PhaseA, 1 = PhaseB
 
 private slots:
-    void onNewSamples(const QVector<uint32_t> &timeStamps,
-                      const QVector<QVector<int>> &channelData);
+    // 来自 A 端（stream0 = AcquisitionEngine::newSamples）
+    void onNewSamplesStream0(const QVector<uint32_t> &timeStamps,
+                             const QVector<QVector<int>> &channelData);
+
+    // 来自 B 端（stream2 = AcquisitionEngine::newSamplesStream2）
+    void onNewSamplesStream2(const QVector<uint32_t> &timeStamps,
+                             const QVector<QVector<int>> &channelData);
+
+    // epoch 时间到了，切换 A/B 阶段，并把刚才这段数据丢出去
     void onEpochTimeout();
 
 private:
     enum Phase {
-        PhaseA = 0,
-        PhaseB = 1
+        PhaseA = 0,   // 当前 epoch 针对 A 端：收集 stream0
+        PhaseB = 1    // 当前 epoch 针对 B 端：收集 stream2
     };
 
     AcquisitionEngine *m_engine = nullptr;
 
     QTimer  m_epochTimer;
     bool    m_running = false;
+    Phase   m_phase   = PhaseA;
 
-    Phase   m_phase = PhaseA;    // 当前处于 A 还是 B 阶段
-
-    int     m_channelA = 0;
-    int     m_channelB = 1;      // 默认 A=CH0, B=CH1，你可以在外部 set
-
-    double  m_sampleRate = 30000.0;
     double  m_epochDurationSec = 5.0;
 
-    double  m_rmsThrA = 50.0;    // 阈值 A
-    double  m_rmsThrB = 50.0;    // 阈值 B
+    // A 端（stream0）当前 epoch 的缓存
+    QVector<uint32_t>        m_tsBufferA;
+    QVector<QVector<int>>    m_chBuffersA;
+    int                      m_numChannelsA = 0;
 
-    int     m_triggerWhenAStimB = 1; // 比如 A 阶段超阈值 → 用 trigger1 刺激 B
-    int     m_triggerWhenBStimA = 0; // 比如 B 阶段超阈值 → 用 trigger0 刺激 A
-
-    // 当前 phase 的 RMS 累计（共用一套累加器）
-    double  m_sumSquares = 0.0;
-    qint64  m_count      = 0;
+    // B 端（stream2）当前 epoch 的缓存
+    QVector<uint32_t>        m_tsBufferB;
+    QVector<QVector<int>>    m_chBuffersB;
+    int                      m_numChannelsB = 0;
 };
