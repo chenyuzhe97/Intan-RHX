@@ -77,6 +77,8 @@ private slots:
 private:
     void cleanup();
     void processDataQueue();
+    void pauseContinuousForStim();      // 只暂停连续采集（给刺激用）
+    void resumeContinuousAfterStim();   // 刺激后恢复连续采集
 
 private:
     RHXController   *m_rhxController   = nullptr;
@@ -85,6 +87,7 @@ private:
     QTimer           m_usbTimer;
     std::deque<RHXDataBlock*> m_dataQueue;
 
+    bool m_continuousRunning = false;   // 当前是否处于连续采集模式
     bool m_deviceOpened = false;
     int  m_numEnabledStreams = 0;
     int  m_channelsPerStream = 16; // 对 RHS，官方文档就是 16

@@ -147,6 +147,8 @@ void AcquisitionEngine::stopAcquisition()
 
     // 清 FIFO
     m_rhxController->flush();
+    m_continuousRunning = false;   // ⭐ 关键
+
 
     emit logMessage("采集已停止");
 }
@@ -229,6 +231,48 @@ void AcquisitionEngine::processDataQueue()
     }
 }
 
+void AcquisitionEngine::pauseContinuousForStim()
+{
+    if (!m_deviceOpened) return;
+    if (!m_continuousRunning) return;  // 本来就没在连续采集，啥也不做
+
+    // 1. 停掉 USB 定时读取
+    m_usbTimer.stop();
+
+    // 2. 告诉 FPGA 不要再 continuous run 了
+    m_rhxController->setContinuousRunMode(false);
+
+    // 3. 等当前这一次 run 结束
+    while (m_rhxController->isRunning()) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+    }
+
+    m_continuousRunning = false;
+
+    emit logMessage("自适应刺激：已暂停连续采集，准备更新刺激参数");
+}
+
+void AcquisitionEngine::resumeContinuousAfterStim()
+{
+    if (!m_deviceOpened) return;
+    if (m_continuousRunning) return;   // 已经在跑就不用重复启
+
+    // 刺激期间可能产生了一点点 FIFO 数据，可以先清掉
+    m_rhxController->flush();
+
+    // 再次进入 continuous 采集模式
+    m_rhxController->setContinuousRunMode(true);
+    m_rhxController->setStimCmdMode(false);
+    m_rhxController->run();
+
+    // 重新开启 USB 定时轮询
+    m_usbTimer.start();
+    m_continuousRunning = true;
+
+    emit logMessage("自适应刺激：刺激参数更新完成，已恢复连续采集");
+}
+
+
 // ====== 刺激相关接口 ======
 void AcquisitionEngine::configureStim(const QString &electrodeName,
                                       int firstPhaseAmplitude,
@@ -273,7 +317,6 @@ void AcquisitionEngine::triggerStim(int triggerSource, bool on)
     m_stimController->stimTrigger(triggerSource, on);
 }
 
-#include <QCoreApplication>  // 顶部已经加了可以复用
 
 void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
                                           int amplitude_uA,
@@ -283,43 +326,29 @@ void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
     if (!m_deviceOpened || !m_stimController) return;
     if (amplitude_uA <= 0 || numPulses <= 0) return;
 
-    // ===== 1）如果当前在连续采集中，先自动暂停 =====
+    // ===== 1）如果当前正在连续采集，先暂停 =====
     bool resumeAfter = m_continuousRunning;
-
     if (resumeAfter) {
         emit logMessage("自适应刺激：检测到处于连续采集中，先暂停采集以更新刺激参数…");
-
-        // 停止 USB 读数
-        m_usbTimer.stop();
-
-        // 关掉 continuous run
-        m_rhxController->setContinuousRunMode(false);
-
-        // 等待当前一次 run 结束
-        while (m_rhxController->isRunning()) {
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
-        }
-
-        // 不一定要 flush，看你是否需要清掉配置过程中产生的那一点点数据
-        m_rhxController->flush();
+        pauseContinuousForStim();
     }
 
-    // ===== 2）正式配置刺激参数（你原来 configureStim 的流程） =====
+    // ===== 2）正式配置刺激并触发 =====
 
     int firstDur_us   = 500;
     int secondDur_us  = 500;
     int interphase_us = 500;
 
     configureStim(electrodeName,
-                  amplitude_uA,
-                  amplitude_uA,
+                  amplitude_uA,   // firstPhaseAmplitude
+                  amplitude_uA,   // secondPhaseAmplitude
                   firstDur_us,
                   secondDur_us,
                   interphase_us,
                   numPulses,
                   triggerSource);
 
-    // 立刻触发一次
+    // 触发一次刺激
     m_stimController->stimTrigger(triggerSource, true);
 
     emit logMessage(QStringLiteral("自适应刺激：%1, 幅度=%2 uA, 脉冲数=%3, trigger=%4")
@@ -328,18 +357,10 @@ void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
                         .arg(numPulses)
                         .arg(triggerSource));
 
-    // ===== 3）如果一开始是连续采集，配置后自动恢复 =====
+    // ===== 3）如果刚才是连续采集，就自动恢复 =====
     if (resumeAfter) {
-        // 再次切回 continuous 模式
-        m_rhxController->flush();              // 清掉刺激配置产生的数据（可选）
-        m_rhxController->setContinuousRunMode(true);
-        m_rhxController->setStimCmdMode(false);
-        m_rhxController->run();
-
-        m_usbTimer.start();
-        m_continuousRunning = true;
-
-        emit logMessage("自适应刺激：刺激参数更新完成，已恢复连续采集");
+        resumeContinuousAfterStim();
     }
 }
+
 
