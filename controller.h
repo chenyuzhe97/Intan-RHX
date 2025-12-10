@@ -7,7 +7,7 @@
 #include "ElectrodeParameters.h"
 #include "rhxregisters.h"
 #include "math.h"
-
+#include <QDebug>
 
 class Controller
 {

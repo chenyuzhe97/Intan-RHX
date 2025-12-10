@@ -110,7 +110,7 @@ void AcquisitionEngine::startContinuousAcquisition()
 
     // 采集模式：连续
     m_rhxController->setContinuousRunMode(true);
-    m_rhxController->setStimCmdMode(true);   // ⭐ 开启刺激命令模式
+    m_rhxController->setStimCmdMode(false);   // ⭐ 开启刺激命令模式
 
     // 开始 SPI 采集（同时可以收数 + 刺激）
     m_rhxController->run();
@@ -126,7 +126,6 @@ void AcquisitionEngine::startContinuousAcquisition()
 }
 
 
-#include <QCoreApplication>  // 头文件顶部记得加
 
 void AcquisitionEngine::stopAcquisition()
 {
@@ -234,44 +233,16 @@ void AcquisitionEngine::processDataQueue()
 void AcquisitionEngine::pauseContinuousForStim()
 {
     if (!m_deviceOpened) return;
-    if (!m_continuousRunning) return;  // 本来就没在连续采集，啥也不做
-
-    // 1. 停掉 USB 定时读取
+    // 只停 USB 定时器，不停板子
     m_usbTimer.stop();
-
-    // 2. 告诉 FPGA 不要再 continuous run 了
-    m_rhxController->setContinuousRunMode(false);
-
-    // 3. 等当前这一次 run 结束
-    while (m_rhxController->isRunning()) {
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
-    }
-
-    m_continuousRunning = false;
-
-    emit logMessage("自适应刺激：已暂停连续采集，准备更新刺激参数");
+    emit logMessage("自适应刺激：仅暂停 USB 读取，板上采集不停");
 }
-
 void AcquisitionEngine::resumeContinuousAfterStim()
 {
     if (!m_deviceOpened) return;
-    if (m_continuousRunning) return;   // 已经在跑就不用重复启
-
-    // 刺激期间可能产生了一点点 FIFO 数据，可以先清掉
-    m_rhxController->flush();
-
-    // 再次进入 continuous 采集模式
-    m_rhxController->setContinuousRunMode(true);
-    m_rhxController->setStimCmdMode(false);
-    m_rhxController->run();
-
-    // 重新开启 USB 定时轮询
     m_usbTimer.start();
-    m_continuousRunning = true;
-
-    emit logMessage("自适应刺激：刺激参数更新完成，已恢复连续采集");
+    emit logMessage("自适应刺激：恢复 USB 读取");
 }
-
 
 // ====== 刺激相关接口 ======
 void AcquisitionEngine::configureStim(const QString &electrodeName,
@@ -331,6 +302,7 @@ void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
     if (resumeAfter) {
         emit logMessage("自适应刺激：检测到处于连续采集中，先暂停采集以更新刺激参数…");
         pauseContinuousForStim();
+        emit logMessage("FPGA暂停采集以更新刺激参数…");
     }
 
     // ===== 2）正式配置刺激并触发 =====
