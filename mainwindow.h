@@ -29,6 +29,8 @@ private slots:
     void onOpenDevice();
     void onStart();
     void onStop();
+    void onRecStart();
+    void onRecStop();
 
     void onABEpochReady(int phaseIndex,
                         const QVector<uint32_t> &timeStamps,
