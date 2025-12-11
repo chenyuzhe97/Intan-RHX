@@ -9,11 +9,7 @@ AcquisitionEngine::AcquisitionEngine(QObject *parent)
             this, &AcquisitionEngine::onUsbTimer);
 }
 
-AcquisitionEngine::~AcquisitionEngine()
-{
-    stopAcquisition();
-    cleanup();
-}
+
 
 void AcquisitionEngine::cleanup()
 {
@@ -181,8 +177,9 @@ void AcquisitionEngine::processDataQueue()
     int numStreams = m_rhxController->getNumEnabledDataStreams();
     if (numStreams <= 0) return;
 
-    const int streamIdx0 = 0;          // 第一个启用的 data stream（A端）
-    const int streamIdx1 = (numStreams > 1) ? 1 : -1; // 第二个（B端），如果有的话
+    const int streamIdx0 = 0;                 // 第一个启用的 data stream（A 端）
+    const int streamIdx1 = (numStreams > 1)   // 第二个（B 端），如果有的话
+                               ? 1 : -1;
 
     while (!m_dataQueue.empty()) {
         RHXDataBlock *block = m_dataQueue.front();
@@ -190,7 +187,7 @@ void AcquisitionEngine::processDataQueue()
 
         int samplesPerBlock = block->samplesPerDataBlock(); // 一般 128
 
-        // ========= stream0: 仍然按你原来的方式输出 =========
+        // ========= stream0(A端) =========
         QVector<uint32_t> timeStamps0(samplesPerBlock);
         QVector<QVector<int>> channelData0(
             m_channelsPerStream,
@@ -205,9 +202,17 @@ void AcquisitionEngine::processDataQueue()
             }
         }
 
+        // 1) 通知 GUI / 闭环算法（单通道图、AB 算法等用这个）
         emit newSamples(timeStamps0, channelData0);
 
-        // ========= stream2(B端): 如果有第二个 data stream，就再构造一份 =========
+        // 2) ⭐ 写入录制文件：把“第一个 data stream”标记为逻辑 streamIndex = 0（A）
+        if (m_isRecording) {
+            writeBlockToRecording(/*streamIndexInFile=*/0,
+                                  timeStamps0,
+                                  channelData0);
+        }
+
+        // ========= stream2(B端) =========
         if (streamIdx1 >= 0) {
             QVector<uint32_t> timeStamps2(samplesPerBlock);
             QVector<QVector<int>> channelData2(
@@ -223,12 +228,21 @@ void AcquisitionEngine::processDataQueue()
                 }
             }
 
+            // 1) 通知 GUI / stream2 波形窗口
             emit newSamplesStream2(timeStamps2, channelData2);
+
+            // 2) ⭐ 写入录制文件：把“第二个 data stream”标记为逻辑 streamIndex = 2（B）
+            if (m_isRecording) {
+                writeBlockToRecording(/*streamIndexInFile=*/2,
+                                      timeStamps2,
+                                      channelData2);
+            }
         }
 
         delete block;
     }
 }
+
 
 void AcquisitionEngine::pauseContinuousForStim()
 {
@@ -243,6 +257,47 @@ void AcquisitionEngine::resumeContinuousAfterStim()
     m_usbTimer.start();
     emit logMessage("自适应刺激：恢复 USB 读取");
 }
+
+void AcquisitionEngine::writeBlockToRecording(
+    int streamIndex,
+    const QVector<uint32_t> &timeStamps,
+    const QVector<QVector<int>> &channelData)
+{
+    if (!m_isRecording) return;
+    if (!m_recordFile.isOpen()) return;
+    if (timeStamps.isEmpty() || channelData.isEmpty()) return;
+
+    int numSamples  = timeStamps.size();
+    int numChannels = channelData.size();
+
+    if (numSamples <= 0 || numChannels <= 0) return;
+
+    // ===== 写 Block 头 =====
+    quint8 streamIdx = quint8(streamIndex);
+    quint8 reserved[3] = {0,0,0};
+
+    m_recordStream << streamIdx;
+    m_recordStream.writeRawData(reinterpret_cast<const char*>(reserved), 3);
+
+    m_recordStream << quint32(numChannels);
+    m_recordStream << quint32(numSamples);
+
+    // ===== 写数据：逐 sample 写 =====
+    for (int i = 0; i < numSamples; ++i) {
+        // timestamp
+        m_recordStream << quint32(timeStamps[i]);
+
+        // 各通道原始值（int16）
+        for (int ch = 0; ch < numChannels; ++ch) {
+            qint16 raw = qint16(channelData[ch][i]);
+            m_recordStream << raw;
+        }
+    }
+
+    // 这里不强制 flush，性能会好一点；如果你怕掉电丢数据，可以偶尔 flush 一次：
+    // m_recordStream.device()->flush();
+}
+
 
 // ====== 刺激相关接口 ======
 void AcquisitionEngine::configureStim(const QString &electrodeName,
@@ -334,5 +389,66 @@ void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
         resumeContinuousAfterStim();
     }
 }
+bool AcquisitionEngine::startBinaryRecording(const QString &filePath)
+{
+    if (!m_deviceOpened) {
+        emit errorOccurred("请先打开设备再开始录制");
+        return false;
+    }
+
+    // 如果之前已经在录，先关掉
+    if (m_isRecording) {
+        stopBinaryRecording();
+    }
+
+    m_recordFile.setFileName(filePath);
+    if (!m_recordFile.open(QIODevice::WriteOnly)) {
+        emit errorOccurred("无法打开录制文件：" + filePath);
+        return false;
+    }
+
+    m_recordStream.setDevice(&m_recordFile);
+    m_recordStream.setByteOrder(QDataStream::LittleEndian);
+
+    // ===== 写文件头 =====
+    char magic[8] = {'B','A','R','E','C','0','1','\0'};
+    m_recordStream.writeRawData(magic, 8);
+
+    quint32 version           = 1;
+    float   sampleRateHz      = float(m_rhxController->getSampleRate());
+    quint32 channelsPerStream = quint32(m_channelsPerStream);
+
+    // 假设你只用 stream0 和 stream2：mask = bit0 + bit2
+    quint32 streamMask        = 0;
+    streamMask |= (1u << 0);  // stream0
+    streamMask |= (1u << 2);  // stream2
+
+    m_recordStream << version;
+    m_recordStream << sampleRateHz;
+    m_recordStream << channelsPerStream;
+    m_recordStream << streamMask;
+
+    // 4 个 reserved，占位
+    for (int i = 0; i < 4; ++i) {
+        m_recordStream << quint32(0);
+    }
+
+    m_isRecording = true;
+    emit logMessage("开始二进制录制：" + filePath);
+    return true;
+}
+
+void AcquisitionEngine::stopBinaryRecording()
+{
+    if (!m_isRecording) return;
+
+    m_isRecording = false;
+    if (m_recordFile.isOpen()) {
+        m_recordFile.close();
+    }
+
+    emit logMessage("二进制录制已停止");
+}
+
 
 

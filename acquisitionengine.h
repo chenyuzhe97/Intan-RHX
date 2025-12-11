@@ -6,6 +6,8 @@
 #include <QVector>
 #include <deque>
 #include <QDebug>
+#include <QFile>
+#include <QDataStream>
 
 #include "okFrontPanel.h"
 #include "rhxcontroller.h"
@@ -21,7 +23,13 @@ class AcquisitionEngine : public QObject
     Q_OBJECT
 public:
     explicit AcquisitionEngine(QObject *parent = nullptr);
-    ~AcquisitionEngine();
+
+    ~AcquisitionEngine()
+    {
+        stopBinaryRecording();  // 先把录制关掉
+        stopAcquisition();
+        cleanup();
+    }
 
     // 打开并初始化硬件（等价于你 main 里面前半部分）
     bool openDevice(const QString &bitfilePath);
@@ -57,6 +65,9 @@ public:
     RHXController* rhx() const { return m_rhxController; }
     Controller* stimController() const { return m_stimController; }
 
+    bool startBinaryRecording(const QString &filePath);
+    void stopBinaryRecording();
+
 signals:
     // 原来就有的：
     void newSamples(const QVector<uint32_t> &timeStamps,
@@ -79,10 +90,18 @@ private:
     void processDataQueue();
     void pauseContinuousForStim();      // 只暂停连续采集（给刺激用）
     void resumeContinuousAfterStim();   // 刺激后恢复连续采集
+    void writeBlockToRecording(int streamIndex,
+                               const QVector<uint32_t> &timeStamps,
+                               const QVector<QVector<int>> &channelData);
 
 private:
     RHXController   *m_rhxController   = nullptr;
     Controller      *m_stimController  = nullptr;
+
+    QFile       m_recordFile;
+    QDataStream m_recordStream;
+    bool        m_isRecording = false;
+
 
     QTimer           m_usbTimer;
     std::deque<RHXDataBlock*> m_dataQueue;

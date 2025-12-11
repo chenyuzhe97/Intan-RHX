@@ -49,6 +49,10 @@ void MainWindow::setupUi()
     m_btnStop  = new QPushButton(tr("停止采集"), this);
     m_btnStim  = new QPushButton(tr("发一次刺激 (A1)"), this);
 
+    // ⭐ 新增两个按钮
+    m_btnRecStart = new QPushButton(tr("开始录制(bin)"), m_central);
+    m_btnRecStop  = new QPushButton(tr("停止录制"), m_central);
+
     buttonLayout->addWidget(m_btnOpen);
     buttonLayout->addWidget(m_btnStart);
     buttonLayout->addWidget(m_btnStop);
@@ -284,6 +288,30 @@ void MainWindow::onStop()
     }
     appendLog("已停止采集");
 }
+
+void MainWindow::onRecStart()
+{
+    if (!m_engine) return;
+
+    QString file = QFileDialog::getSaveFileName(
+        this,
+        tr("选择录制文件保存路径"),
+        QDir::currentPath() + "/recording.bar",
+        tr("Binary Recording (*.bar);;All Files (*.*)")
+        );
+    if (file.isEmpty()) return;
+
+    if (m_engine->startBinaryRecording(file)) {
+        appendLog("开始录制到文件：" + file);
+    }
+}
+
+void MainWindow::onRecStop()
+{
+    if (!m_engine) return;
+    m_engine->stopBinaryRecording();
+}
+
 
 void MainWindow::onABEpochReady(int phaseIndex,
                                 const QVector<uint32_t> &timeStamps,
