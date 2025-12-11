@@ -57,6 +57,8 @@ void MainWindow::setupUi()
     buttonLayout->addWidget(m_btnStart);
     buttonLayout->addWidget(m_btnStop);
     buttonLayout->addWidget(m_btnStim);
+    buttonLayout->addWidget(m_btnRecStart);
+    buttonLayout->addWidget(m_btnRecStop);
     buttonLayout->addStretch(1);  // 右边空出来一点
 
     m_layout->addLayout(buttonLayout);
@@ -107,6 +109,10 @@ void MainWindow::setupUi()
             this,       &MainWindow::onStop);
     connect(m_btnStim,  &QPushButton::clicked,
             this,       &MainWindow::onStimOnce);
+    connect(m_btnRecStart, &QPushButton::clicked,
+            this,          &MainWindow::onRecStart);
+    connect(m_btnRecStop,  &QPushButton::clicked,
+            this,          &MainWindow::onRecStop);
 
     // ===== 单通道（Stream0）通道选择 =====
     connect(m_comboChannel,

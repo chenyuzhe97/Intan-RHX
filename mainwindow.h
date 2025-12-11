@@ -64,7 +64,7 @@ private:
     QPushButton      *m_btnStart = nullptr;
     QPushButton      *m_btnStop = nullptr;
     QPushButton      *m_btnStim  = nullptr;
-    QPushButton      *m_btnRecstart = nullptr;
+    QPushButton      *m_btnRecStart = nullptr;
     QPushButton      *m_btnRecStop = nullptr;
     QPlainTextEdit   *m_logView = nullptr;
 
