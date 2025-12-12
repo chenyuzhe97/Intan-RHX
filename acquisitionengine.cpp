@@ -355,9 +355,8 @@ void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
     // ===== 1）如果当前正在连续采集，先暂停 =====
     bool resumeAfter = m_continuousRunning;
     if (resumeAfter) {
-        emit logMessage("自适应刺激：检测到处于连续采集中，先暂停采集以更新刺激参数…");
+        emit logMessage("自适应刺激：更新刺激参数…");
         pauseContinuousForStim();
-        emit logMessage("FPGA暂停采集以更新刺激参数…");
     }
 
     // ===== 2）正式配置刺激并触发 =====
