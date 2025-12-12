@@ -6,83 +6,7 @@ ABAlgorithm::ABAlgorithm(QObject *parent)
 {
 }
 
-ABAlgorithm::Result ABAlgorithm::analyzeEpoch(
-    int phaseIndex,
-    const QVector<uint32_t> &timeStamps,
-    const QVector<QVector<int>> &channelData)
-{
-    Q_UNUSED(phaseIndex);
-
-    Result res;
-    int numCh = channelData.size();
-    int N     = timeStamps.size();
-    if (numCh == 0 || N == 0) {
-        return res;
-    }
-
-    res.channelRms.resize(numCh);
-
-    for (int ch = 0; ch < numCh; ++ch) {
-        const auto &data = channelData[ch];
-        if (data.isEmpty()) {
-            res.channelRms[ch] = 0.0;
-            continue;
-        }
-
-        // 1) int -> uV
-        QVector<double> x;
-        x.resize(data.size());
-        for (int i = 0; i < data.size(); ++i) {
-            x[i] = (double(data[i]) - 32768.0) * 0.195;  // 原来的换算
-        }
-
-        // 2) 选择滤波方式：举例用带通 1-40 Hz
-        QVector<double> xf = bandPassFilter(x, 1.0, 40.0);
-        // 你也可以换成：
-        // auto xf = lowPassFilter(x, 40.0);
-        // auto xf = highPassFilter(x, 1.0);
-
-        // 3) 对滤波后的数据算 RMS
-        double sumSq = 0.0;
-        int Nch = xf.size();
-        for (int i = 0; i < Nch; ++i) {
-            double uV = xf[i];
-            sumSq += uV * uV;
-        }
-        double rms = qSqrt(sumSq / double(Nch));
-        res.channelRms[ch] = rms;
-    }
-
-    // 4) 全通道平均 RMS & 刺激判定逻辑保持不变
-    double sum = 0.0;
-    for (double v : res.channelRms) sum += v;
-    res.globalRms = sum / double(numCh);
-
-    if (res.globalRms > m_globalRmsThreshold) {
-        res.needStim = true;
-
-        int amp = int(res.globalRms);
-        if (amp < m_minAmp_uA) amp = m_minAmp_uA;
-        if (amp > m_maxAmp_uA) amp = m_maxAmp_uA;
-
-        res.suggestedAmplitude_uA = amp;
-        res.suggestedNumPulses    = 1;
-    } else {
-        res.needStim = false;
-        res.suggestedAmplitude_uA = 0;
-        res.suggestedNumPulses    = 0;
-    }
-
-    return res;
-}
-
-
-
-
-// ========== 一阶低通 ==========
-// 连续 RC 低通：H(s) = 1 / (1 + sRC)
-// 离散形式：y[n] = y[n-1] + alpha * (x[n] - y[n-1])
-// 其中 alpha = dt / (RC + dt) = 1 - exp(-2πfc/fs) 近似
+// ========= 一阶低通 =========
 QVector<double> ABAlgorithm::lowPassFilter(
     const QVector<double> &x,
     double cutoffHz) const
@@ -103,9 +27,7 @@ QVector<double> ABAlgorithm::lowPassFilter(
     return y;
 }
 
-// ========== 一阶高通 ==========
-// 连续 RC 高通：H(s) = sRC / (1 + sRC)
-// 离散形式：y[n] = alpha * (y[n-1] + x[n] - x[n-1])
+// ========= 一阶高通 =========
 QVector<double> ABAlgorithm::highPassFilter(
     const QVector<double> &x,
     double cutoffHz) const
@@ -117,7 +39,7 @@ QVector<double> ABAlgorithm::highPassFilter(
 
     double dt = 1.0 / m_sampleRateHz;
     double RC = 1.0 / (2.0 * M_PI * cutoffHz);
-    double alpha = RC / (RC + dt);   // 也在 0~1 之间
+    double alpha = RC / (RC + dt);
 
     y[0] = 0.0;  // 高通起始可以设为 0
     for (int n = 1; n < x.size(); ++n) {
@@ -126,8 +48,7 @@ QVector<double> ABAlgorithm::highPassFilter(
     return y;
 }
 
-// ========== 带通 ==========
-// 先高通(去掉直流和慢趋势), 再低通(去掉高频噪声)
+// ========= 带通：先 HP 再 LP =========
 QVector<double> ABAlgorithm::bandPassFilter(
     const QVector<double> &x,
     double lowCutHz,
@@ -137,10 +58,129 @@ QVector<double> ABAlgorithm::bandPassFilter(
     if (x.isEmpty() || lowCutHz <= 0.0 || highCutHz <= lowCutHz)
         return y;
 
-    // 先高通，去掉低于 lowCutHz 的成分
     QVector<double> tmp = highPassFilter(x, lowCutHz);
-    // 再低通，去掉高于 highCutHz 的成分
     y = lowPassFilter(tmp, highCutHz);
-
     return y;
+}
+
+// ========= 单通道尖峰检测 =========
+// 策略：
+//  1) 用 m_spikeThreshold_uV 做阈值
+//  2) 检测从 <thr 到 >=thr 的“上升沿”
+//  3) 在一个小窗口内找局部峰值（真正尖峰顶）
+//  4) 加不应期，避免重复
+void ABAlgorithm::detectSpikesSingleChannel(
+    const QVector<double> &filtered,
+    const QVector<uint32_t> &timeStamps,
+    int chIndex,
+    QVector<Result> &outResults) const
+{
+    int N = filtered.size();
+    if (N == 0 || timeStamps.size() != N)
+        return;
+
+    // 不应期对应的样本数
+    int refractorySamples =
+        int(m_refractoryMs * m_sampleRateHz / 1000.0);
+    if (refractorySamples < 1) refractorySamples = 1;
+
+    // 在上升沿后，往后看多少样本找峰
+    // 这里用 0.8 ms 的窗口举例
+    int peakWindowSamples =
+        int(0.8 * m_sampleRateHz / 1000.0);
+    if (peakWindowSamples < 1) peakWindowSamples = 1;
+
+    double thr = m_spikeThreshold_uV;
+    int lastSpikeIdx = -refractorySamples;
+
+    for (int i = 1; i < N; ++i) {
+        // 不应期限制
+        if (i - lastSpikeIdx < refractorySamples)
+            continue;
+
+        double prev = filtered[i - 1];
+        double curr = filtered[i];
+
+        // 上升沿穿越阈值
+        if (prev < thr && curr >= thr) {
+            // 在 [i, i + peakWindowSamples) 区间寻找真正峰值
+            int   peakIdx = i;
+            double peakVal = curr;
+
+            int jEnd = qMin(N, i + peakWindowSamples);
+            for (int j = i + 1; j < jEnd; ++j) {
+                if (filtered[j] > peakVal) {
+                    peakVal = filtered[j];
+                    peakIdx = j;
+                }
+            }
+
+            lastSpikeIdx = peakIdx;
+
+            Result r;
+            r.needStim          = true;
+            r.channelIndex      = chIndex;
+            r.triggerTime       = timeStamps[peakIdx];
+            r.spikeAmplitude_uV = peakVal;
+
+            // ===== 简单版：根据峰值粗略映射刺激电流（你之后可以自己调算法）=====
+            // 举例：peakVal = thr 时给最小电流；peakVal 高一些时线性增加一点点
+            double over = qMax(0.0, peakVal - thr);    // 超出阈值多少 µV
+            double k    = 0.05;                        // 每 1 µV 增加 0.05 uA（纯示例）
+
+            int amp = int(m_minAmp_uA + k * over);
+            if (amp < m_minAmp_uA) amp = m_minAmp_uA;
+            if (amp > m_maxAmp_uA) amp = m_maxAmp_uA;
+
+            r.suggestedAmplitude_uA = amp;
+            r.suggestedNumPulses    = m_defaultNumPulses;
+
+            outResults.append(r);
+        }
+    }
+}
+
+// ========= 主函数：一整个 epoch 内检测所有通道的所有尖峰 =========
+QVector<ABAlgorithm::Result> ABAlgorithm::analyzeEpoch(
+    int phaseIndex,
+    const QVector<uint32_t> &timeStamps,
+    const QVector<QVector<int>> &channelData)
+{
+    Q_UNUSED(phaseIndex);
+
+    QVector<Result> allResults;
+
+    int numCh = channelData.size();
+    int N     = timeStamps.size();
+    if (numCh == 0 || N == 0) {
+        return allResults;
+    }
+
+    // 遍历每个通道：int -> µV -> 带通 -> 尖峰检测
+    for (int ch = 0; ch < numCh; ++ch) {
+        const auto &raw = channelData[ch];
+        if (raw.isEmpty())
+            continue;
+
+        int nSamples = qMin(raw.size(), N); // 保守起见，取两者最小
+
+        // 1) int -> uV
+        QVector<double> x;
+        x.resize(nSamples);
+        for (int i = 0; i < nSamples; ++i) {
+            x[i] = (double(raw[i]) - 32768.0) * 0.195;  // 和你原来一致
+        }
+
+        // 2) 带通滤波，用于 spike
+        QVector<double> xf = bandPassFilter(x, m_bpLowCutHz, m_bpHighCutHz);
+        if (xf.size() != nSamples) {
+            // 理论上是一样大的，这里防御性处理一下
+            xf.resize(nSamples);
+        }
+
+        // 3) 尖峰检测，往 allResults 里 append
+        detectSpikesSingleChannel(xf, timeStamps, ch, allResults);
+    }
+
+    return allResults;
 }

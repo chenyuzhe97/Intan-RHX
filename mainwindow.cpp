@@ -335,20 +335,21 @@ void MainWindow::onABEpochReady(int phaseIndex,
 
     if (!m_abAlgo) return;
 
-    // 1️⃣ 调算法
-    auto res = m_abAlgo->analyzeEpoch(phaseIndex, timeStamps, channelData);
+    // 1️⃣ 调算法：现在返回的是 QVector<ABAlgorithm::Result>
+    QVector<ABAlgorithm::Result> results =
+        m_abAlgo->analyzeEpoch(phaseIndex, timeStamps, channelData);
 
-    appendLog(QString("  全通道平均 RMS = %1 µV").arg(res.globalRms, 0, 'f', 2));
-
-    // 2️⃣ 决定是否刺激
-    if (!res.needStim || res.suggestedAmplitude_uA <= 0) {
-        appendLog(QString("%1: 算法判定不刺激").arg(phaseName));
+    if (results.isEmpty()) {
+        appendLog(QString("%1: 本 epoch 未检测到任何尖峰事件，未刺激").arg(phaseName));
         return;
     }
 
-    if (!m_engine) return;
+    if (!m_engine) {
+        appendLog(QString("%1: 检测到尖峰，但刺激引擎未就绪，无法刺激").arg(phaseName));
+        return;
+    }
 
-    // 3️⃣ 根据 phase 决定刺激目标和 trigger
+    // 2️⃣ 根据 phase 决定刺激目标和 trigger
     QString targetElectrode;
     int triggerSource = 0;
 
@@ -362,22 +363,35 @@ void MainWindow::onABEpochReady(int phaseIndex,
         triggerSource   = 0;      // trigger 0 刺激 A
     }
 
-    int numPulses = (res.suggestedNumPulses > 0)
-                        ? res.suggestedNumPulses
-                        : 1;
+    // 3️⃣ 按照结果顺序依次刺激（results 已按时间顺序）
+    for (int i = 0; i < results.size(); ++i) {
+        const auto &r = results[i];
 
-    appendLog(QString("%1: 算法建议刺激 %2, 幅度=%3 uA, 脉冲数=%4")
-                  .arg(phaseName)
-                  .arg(targetElectrode)
-                  .arg(res.suggestedAmplitude_uA)
-                  .arg(numPulses));
+        if (!r.needStim || r.suggestedAmplitude_uA <= 0)
+            continue;
 
-    // 4️⃣ 调用引擎执行自适应刺激
-    m_engine->applyAdaptiveStim(targetElectrode,
-                                res.suggestedAmplitude_uA,
-                                numPulses,
-                                triggerSource);
+        int numPulses = (r.suggestedNumPulses > 0)
+                            ? r.suggestedNumPulses
+                            : 1;
+
+        appendLog(QString("%1: 事件 #%2 | t=%3 ms | ch=%4 | spike=%5 µV -> 刺激 %6, 幅度=%7 uA, 脉冲数=%8")
+                      .arg(phaseName)
+                      .arg(i)
+                      .arg(r.triggerTime)
+                      .arg(r.channelIndex)
+                      .arg(r.spikeAmplitude_uV, 0, 'f', 1)
+                      .arg(targetElectrode)
+                      .arg(r.suggestedAmplitude_uA)
+                      .arg(numPulses));
+
+        // 4️⃣ 调用引擎执行自适应刺激
+        m_engine->applyAdaptiveStim(targetElectrode,
+                                    r.suggestedAmplitude_uA,
+                                    numPulses,
+                                    triggerSource);
+    }
 }
+
 
 
 void MainWindow::handleNewSamples(const QVector<uint32_t> &timeStamps,

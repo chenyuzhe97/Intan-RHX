@@ -4,13 +4,12 @@
 #include <QVector>
 #include <QtMath>
 
-
 /**
  * AB 闭环的“算法模块”
  * 只关心数据，不关心 GUI、不关心 Intan 细节
  *
  * 输入：phaseIndex, timeStamps, channelData
- * 输出：要不要刺激？（needStim），以及你想要的中间结果（比如每通道 RMS）
+ * 输出：多个“尖峰事件” Result
  */
 class ABAlgorithm : public QObject
 {
@@ -19,21 +18,26 @@ public:
     explicit ABAlgorithm(QObject *parent = nullptr);
 
     struct Result {
-        bool   needStim = false;          // 是否建议刺激
-        double globalRms = 0.0;           // 全通道平均 RMS
-        QVector<double> channelRms;       // 每通道 RMS
+        bool     needStim          = false;    // 是否建议刺激
+        uint32_t triggerTime       = 0;        // 在这一 epoch 内的触发时间（直接用传进来的 timeStamps）
+        int      channelIndex      = -1;       // 哪个通道出的尖峰
+        double   spikeAmplitude_uV = 0.0;      // 该尖峰的峰值幅度（µV）
 
-        // ⭐ 新增：建议的刺激参数（单位都用 uA / 脉冲个数）
-        int    suggestedAmplitude_uA = 0; // 建议刺激电流幅度
-        int    suggestedNumPulses    = 1; // 建议脉冲个数
+        int      suggestedAmplitude_uA = 0;    // 建议刺激电流幅度
+        int      suggestedNumPulses    = 1;    // 建议脉冲个数
     };
 
-    Result analyzeEpoch(int phaseIndex,
-                        const QVector<uint32_t> &timeStamps,
-                        const QVector<QVector<int>> &channelData);
+    // ⭐ 现在返回多个 Result
+    QVector<Result> analyzeEpoch(int phaseIndex,
+                                 const QVector<uint32_t> &timeStamps,
+                                 const QVector<QVector<int>> &channelData);
 
-    void setThreshold(double thr) { m_globalRmsThreshold = thr; }
-    // ===== 新增三个滤波接口（对单通道数据）=====
+    // 如果你想把阈值和不应期开放给外部调：
+    void setSpikeThreshold(double thr_uV) { m_spikeThreshold_uV = thr_uV; }
+    void setRefractoryMs(double ms)       { m_refractoryMs = ms; }
+    void setSampleRate(double fs)         { m_sampleRateHz = fs; }
+
+    // ===== 三个滤波接口（对单通道数据）=====
     QVector<double> lowPassFilter(
         const QVector<double> &x,
         double cutoffHz) const;
@@ -47,12 +51,24 @@ public:
         double lowCutHz,
         double highCutHz) const;
 
-    // 如果你需要设置采样率，可以加：
-    void setSampleRate(double fs) { m_sampleRateHz = fs; }
-
 private:
-    double m_sampleRateHz        = 30000.0;  // 默认 1 kHz，自行改
-    double m_globalRmsThreshold = 50.0;   // µV
-    int    m_minAmp_uA = 20;              // 最小刺激幅度
-    int    m_maxAmp_uA = 200;             // 最大刺激幅度
+    // ====== 基本参数 ======
+    double m_sampleRateHz   = 30000.0;   // 30 kHz 采样（Intan 风格）
+    double m_spikeThreshold_uV = 100.0;  // 尖峰阈值，µV，先写死，之后根据数据调
+    double m_refractoryMs      = 1.0;    // 不应期，ms，避免一个尖峰多次触发
+
+    // 尖峰检测使用的带通范围，适合 spike（你可以根据实际改）
+    double m_bpLowCutHz    = 300.0;
+    double m_bpHighCutHz   = 3000.0;
+
+    int    m_minAmp_uA     = 20;         // 刺激电流下限
+    int    m_maxAmp_uA     = 200;        // 刺激电流上限
+    int    m_defaultNumPulses = 1;
+
+    // 单通道尖峰检测：在 filtered 上做阈值 + 不应期 + 找峰
+    void detectSpikesSingleChannel(
+        const QVector<double> &filtered,
+        const QVector<uint32_t> &timeStamps,
+        int chIndex,
+        QVector<Result> &outResults) const;
 };
