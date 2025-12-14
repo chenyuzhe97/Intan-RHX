@@ -143,7 +143,6 @@ SOURCES += main.cpp \
     acquisitionengine.cpp \
     controller.cpp \
     electrodeparameters.cpp \
-    experimentcontroller.cpp \
     experimentcontrollerab.cpp \
     mainwindow.cpp
 
@@ -270,7 +269,6 @@ HEADERS += \
     acquisitionengine.h \
     controller.h \
     electrodeparameters.h \
-    experimentcontroller.h \
     experimentcontrollerab.h \
     mainwindow.h
 

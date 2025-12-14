@@ -318,7 +318,6 @@ void MainWindow::onRecStop()
     m_engine->stopBinaryRecording();
 }
 
-
 void MainWindow::onABEpochReady(int phaseIndex,
                                 const QVector<uint32_t> &timeStamps,
                                 const QVector<QVector<int>> &channelData)
@@ -335,17 +334,17 @@ void MainWindow::onABEpochReady(int phaseIndex,
 
     if (!m_abAlgo) return;
 
-    // 1️⃣ 调算法：现在返回的是 QVector<ABAlgorithm::Result>
+    // 1️⃣ 调算法 —— 现在返回的是 QVector<ABAlgorithm::Result>
     QVector<ABAlgorithm::Result> results =
         m_abAlgo->analyzeEpoch(phaseIndex, timeStamps, channelData);
 
     if (results.isEmpty()) {
-        appendLog(QString("%1: 本 epoch 未检测到任何尖峰事件，未刺激").arg(phaseName));
+        appendLog(QString("%1: 本 epoch 未检测到尖峰事件，未刺激").arg(phaseName));
         return;
     }
 
     if (!m_engine) {
-        appendLog(QString("%1: 检测到尖峰，但刺激引擎未就绪，无法刺激").arg(phaseName));
+        appendLog(QString("%1: 检测到尖峰，但 m_engine 为空，无法刺激").arg(phaseName));
         return;
     }
 
@@ -355,18 +354,28 @@ void MainWindow::onABEpochReady(int phaseIndex,
 
     if (phaseIndex == 0) {
         // PhaseA：看 A 端 → 刺激 B 端
-        targetElectrode = "B1";   // 这里先写死，你之后可以做成配置
-        triggerSource   = 1;      // 你之前约定 trigger 1 刺激 B
+        targetElectrode = "B1";   // TODO: 以后做成可配置
+        triggerSource   = 1;      // 约定 trigger 1 刺激 B
     } else {
         // PhaseB：看 B 端 → 刺激 A 端
         targetElectrode = "A1";
-        triggerSource   = 0;      // trigger 0 刺激 A
+        triggerSource   = 0;      // 约定 trigger 0 刺激 A
     }
 
-    // 3️⃣ 按照结果顺序依次刺激（results 已按时间顺序）
-    for (int i = 0; i < results.size(); ++i) {
-        const auto &r = results[i];
+    // 3️⃣ 按时间顺序逐个处理事件，但最多 10 个
+    const int maxStimPerEpoch = 10;
+    int stimCount = 0;
 
+    for (int i = 0; i < results.size(); ++i) {
+        if (stimCount >= maxStimPerEpoch) {
+            appendLog(QString("%1: 本 epoch 检测到 %2 个事件，只对前 %3 个执行刺激，其余忽略")
+                          .arg(phaseName)
+                          .arg(results.size())
+                          .arg(maxStimPerEpoch));
+            break;
+        }
+
+        const auto &r = results[i];
         if (!r.needStim || r.suggestedAmplitude_uA <= 0)
             continue;
 
@@ -374,7 +383,9 @@ void MainWindow::onABEpochReady(int phaseIndex,
                             ? r.suggestedNumPulses
                             : 1;
 
-        appendLog(QString("%1: 事件 #%2 | t=%3 ms | ch=%4 | spike=%5 µV -> 刺激 %6, 幅度=%7 uA, 脉冲数=%8")
+        appendLog(QString(
+                      "%1: 事件 #%2 | t=%3 ms | ch=%4 | spike=%5 µV "
+                      "-> 刺激 %6, 幅度=%7 uA, 脉冲数=%8")
                       .arg(phaseName)
                       .arg(i)
                       .arg(r.triggerTime)
@@ -384,11 +395,17 @@ void MainWindow::onABEpochReady(int phaseIndex,
                       .arg(r.suggestedAmplitude_uA)
                       .arg(numPulses));
 
-        // 4️⃣ 调用引擎执行自适应刺激
+        // 4️⃣ 调用原来的立即刺激接口
         m_engine->applyAdaptiveStim(targetElectrode,
                                     r.suggestedAmplitude_uA,
                                     numPulses,
                                     triggerSource);
+
+        ++stimCount;
+    }
+
+    if (stimCount == 0) {
+        appendLog(QString("%1: 本 epoch 虽检测到事件，但全部被判定为不需刺激").arg(phaseName));
     }
 }
 
