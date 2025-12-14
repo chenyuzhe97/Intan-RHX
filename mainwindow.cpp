@@ -13,6 +13,13 @@ MainWindow::MainWindow(QWidget *parent)
     m_experiment = new ExperimentControllerAB(m_engine, this);
     m_abAlgo     = new ABAlgorithm(this);
 
+    // ⭐ 告诉 AB 算法采样率（你整个系统现在就是 30000 Hz）
+    if (m_abAlgo) {
+        m_abAlgo->setSampleRateHz(m_sampleRate);
+        // 如果 m_sampleRate 没有对外暴露，就直接写死 30000.0 也行：
+        // m_abAlgo->setSampleRateHz(30000.0);
+    }
+
 
     connect(m_engine, &AcquisitionEngine::newSamples,
             this,      &MainWindow::handleNewSamples);
@@ -76,6 +83,34 @@ void MainWindow::setupUi()
     chLayout0->addStretch(1);
     m_layout->addLayout(chLayout0);
 
+    // ⭐⭐⭐ 这里加一行带通滤波控件
+    QHBoxLayout *bpLayout = new QHBoxLayout();
+    m_chkBandpass = new QCheckBox(tr("带通滤波"), this);
+    m_spinBpLow   = new QDoubleSpinBox(this);
+    m_spinBpHigh  = new QDoubleSpinBox(this);
+
+    // 低截止频率
+    m_spinBpLow->setRange(1.0, 10000.0);
+    m_spinBpLow->setDecimals(1);
+    m_spinBpLow->setValue(300.0);
+    m_spinBpLow->setSuffix(" Hz");
+
+    // 高截止频率
+    m_spinBpHigh->setRange(10.0, 15000.0);
+    m_spinBpHigh->setDecimals(1);
+    m_spinBpHigh->setValue(3000.0);
+    m_spinBpHigh->setSuffix(" Hz");
+
+    bpLayout->addWidget(m_chkBandpass);
+    bpLayout->addWidget(new QLabel(tr("低截止"), this));
+    bpLayout->addWidget(m_spinBpLow);
+    bpLayout->addWidget(new QLabel(tr("高截止"), this));
+    bpLayout->addWidget(m_spinBpHigh);
+    bpLayout->addStretch(1);
+
+    m_layout->addLayout(bpLayout);
+    // ⭐⭐⭐ 到这里为止，是 Stream0 的滤波控制 UI
+
     // 图本身在 setupSinglePlot() 里插入
 
     // ===== Stream2 单通道：通道选择 + 图，占位 =====
@@ -119,6 +154,18 @@ void MainWindow::setupUi()
             QOverload<int>::of(&QComboBox::currentIndexChanged),
             this,
             &MainWindow::onChannelChanged);
+
+    // ===== 带通滤波勾选 & 参数变化 =====
+    connect(m_chkBandpass, &QCheckBox::toggled,
+            this,          &MainWindow::onBandpassToggled);
+    connect(m_spinBpLow,
+            QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this,
+            &MainWindow::onBandpassParamChanged);
+    connect(m_spinBpHigh,
+            QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this,
+            &MainWindow::onBandpassParamChanged);
 
     // ===== Stream2 通道选择 =====
     connect(m_comboStream2Ch,
@@ -418,30 +465,43 @@ void MainWindow::handleNewSamples(const QVector<uint32_t> &timeStamps,
     if (timeStamps.isEmpty()) return;
 
     int numCh = channelData.size();
-    int N = timeStamps.size();
+    int N     = timeStamps.size();
     if (N <= 0) return;
 
-    // ====== 只做单通道：当前选中的 ch ======
     int chSel = qBound(0, m_currentChannel, numCh - 1);
-    const QVector<int> &chSelData = channelData[chSel];
-
-    int Nsingle = qMin(N, chSelData.size());
+    const QVector<int> &chData = channelData[chSel];
+    int Nsingle = qMin(N, chData.size());
     if (Nsingle <= 0) return;
 
-    // 下采样因子：越大越省 CPU（对应显示越“稀疏”）
-    const int decim = 30;  // 30kHz / 30 ≈ 每秒 1000 点，2 秒 ≈ 2000 点，完全够看
+    // 1) 整段转成 µV
+    QVector<double> uVfull(Nsingle);
+    for (int i = 0; i < Nsingle; ++i) {
+        uVfull[i] = (double(chData[i]) - 32768.0) * 0.195;
+    }
+
+    // 2) 如果勾选了带通滤波，就先滤波
+    QVector<double> y;
+    if (m_enableBandpass && m_abAlgo) {
+        // 当前采样率 30kHz（或你实际的采样率）
+        m_abAlgo->setSampleRateHz(m_sampleRate);     // 如果你没有 m_sampleRate，就写 30000.0
+        y = m_abAlgo->bandPassFilter(uVfull, m_bpLowHz, m_bpHighHz);
+
+        // 防御：bandPassFilter 如果因为参数错误返回空，退回原始信号
+        if (y.size() != Nsingle) {
+            y = uVfull;
+        }
+    } else {
+        y = uVfull;
+    }
+
+    const int decim = 30;  // 和你原来一样的下采样比
 
     for (int i = 0; i < Nsingle; i += decim) {
         uint32_t ts = timeStamps[i];
-        int raw      = chSelData[i];
-
-        // Intan timeStamp 一般是样本计数，直接除采样率=秒
         double tSec = double(ts) / m_sampleRate;
+        double val  = y[i];
 
-        // 转 µV（你 Python 就是这么干的）
-        double uV   = (double(raw) - 32768.0) * 0.195;
-
-        m_buffer.append(QPointF(tSec, uV));
+        m_buffer.append(QPointF(tSec, val));
     }
 
     if (m_buffer.isEmpty()) return;
@@ -451,7 +511,6 @@ void MainWindow::handleNewSamples(const QVector<uint32_t> &timeStamps,
     double tMin = tMax - m_visibleWindowSec;
     if (tMin < 0.0) tMin = 0.0;
 
-    // 把更早的数据从前面扔掉
     while (!m_buffer.isEmpty() && m_buffer.first().x() < tMin) {
         m_buffer.removeFirst();
     }
@@ -469,9 +528,11 @@ void MainWindow::handleNewSamples(const QVector<uint32_t> &timeStamps,
     double margin = 0.1 * (yMax - yMin + 1e-9);
     m_axisY->setRange(yMin - margin, yMax + margin);
 
-    // X 轴固定滑动窗口 [tMin, tMax]，就是“只看最后 2 秒”
+    // X 轴固定滑动窗口
     m_axisX->setRange(tMin, tMax);
 }
+
+
 void MainWindow::handleNewSamplesStream2(const QVector<uint32_t> &timeStamps,
                                          const QVector<QVector<int>> &channelData)
 {
@@ -558,3 +619,47 @@ void MainWindow::onStimOnce()
     m_engine->triggerStim(triggerSource, true);
     appendLog("已触发刺激（使用当前已配置波形，trigger=0）");
 }
+
+void MainWindow::onBandpassToggled(bool checked)
+{
+    m_enableBandpass = checked;
+
+    // 开/关的时候日志里提示一下
+    if (checked) {
+        appendLog(QString("带通滤波：开启 [%1 - %2] Hz")
+                      .arg(m_bpLowHz)
+                      .arg(m_bpHighHz));
+    } else {
+        appendLog("带通滤波：关闭");
+    }
+
+    // 切换状态时清一下 buffer，避免旧数据混在一起
+    m_buffer.clear();
+    if (m_series) m_series->clear();
+}
+
+void MainWindow::onBandpassParamChanged(double /*value*/)
+{
+    double low  = m_spinBpLow->value();
+    double high = m_spinBpHigh->value();
+
+    // 防止用户把低频调得比高频还高，自动交换一下
+    if (low >= high) {
+        std::swap(low, high);
+        // 同步回 spinBox
+        m_spinBpLow->blockSignals(true);
+        m_spinBpHigh->blockSignals(true);
+        m_spinBpLow->setValue(low);
+        m_spinBpHigh->setValue(high);
+        m_spinBpLow->blockSignals(false);
+        m_spinBpHigh->blockSignals(false);
+    }
+
+    m_bpLowHz  = low;
+    m_bpHighHz = high;
+
+    appendLog(QString("更新带通范围: [%1 - %2] Hz")
+                  .arg(m_bpLowHz)
+                  .arg(m_bpHighHz));
+}
+

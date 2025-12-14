@@ -7,7 +7,8 @@
 #include <QVBoxLayout>
 #include <QComboBox>
 #include <QLabel>
-
+#include <QCheckBox>
+#include <QDoubleSpinBox>
 #include "acquisitionengine.h"
 #include "abalgorithm.h"
 #include "experimentcontrollerab.h"
@@ -49,6 +50,9 @@ private slots:
     void onChannelChanged(int index);
     void onStimOnce();
 
+    void onBandpassToggled(bool checked);
+    void onBandpassParamChanged(double value);
+
 private:
     void setupUi();
     void setupSinglePlot();   // ⭐ 单通道图
@@ -81,6 +85,16 @@ private:
     QVector<QPointF> m_buffer;
     double m_visibleWindowSec = 2.0;
     double m_sampleRate       = 30000.0;
+
+    // ==== 带通滤波 UI ====
+    QCheckBox      *m_chkBandpass = nullptr;
+    QDoubleSpinBox *m_spinBpLow   = nullptr;
+    QDoubleSpinBox *m_spinBpHigh  = nullptr;
+
+    // ==== 带通滤波参数 ====
+    bool   m_enableBandpass = false;
+    double m_bpLowHz        = 300.0;
+    double m_bpHighHz       = 3000.0;
 
     // ⭐ 新增：通道选择控件
     QComboBox     *m_comboChannel = nullptr;
