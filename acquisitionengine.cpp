@@ -9,8 +9,6 @@ AcquisitionEngine::AcquisitionEngine(QObject *parent)
             this, &AcquisitionEngine::onUsbTimer);
 }
 
-
-
 void AcquisitionEngine::cleanup()
 {
     // 清空队列里的 RHXDataBlock
@@ -54,12 +52,10 @@ bool AcquisitionEngine::openDevice(const QString &bitfilePath)
     m_rhxController->open(availableDevices[0]);
 
     // 3. 加载 bitfile 并初始化
-    // 注意：官方例程里函数名是 uploadFpgaBitfile，
-    // 你的工程里是 uploadFPGABitfile，就按你工程的来
     m_rhxController->uploadFPGABitfile(bitfilePath.toStdString());
     m_rhxController->initialize();
 
-    // 默认先开 stream 0，后面你可以在 GUI 勾选其它 stream
+    // 默认先开 stream 0，你之前也打开了 2，这里可以保留
     m_rhxController->enableDataStream(0, true);
     m_rhxController->enableDataStream(2, true);
 
@@ -71,7 +67,7 @@ bool AcquisitionEngine::openDevice(const QString &bitfilePath)
     int ledArray[8] = {1,0,0,0,0,0,0,0};
     m_rhxController->setLedDisplay(ledArray);
 
-    // 创建刺激控制器（完全照你 main）
+    // 创建刺激控制器（完全照 main）
     m_stimController = new Controller(m_rhxController);
 
     // 记录流和通道数
@@ -101,9 +97,6 @@ void AcquisitionEngine::startContinuousAcquisition()
         return;
     }
 
-    // 不再 flush，前面我们已经删掉了
-    // m_rhxController->flush();
-
     // 采集模式：连续
     m_rhxController->setContinuousRunMode(true);
     m_rhxController->setStimCmdMode(false);   // ⭐ 开启刺激命令模式
@@ -117,11 +110,8 @@ void AcquisitionEngine::startContinuousAcquisition()
     // 连续采集模式开
     m_continuousRunning = true;
 
-
     emit logMessage("连续采集已启动（允许发送刺激）");
 }
-
-
 
 void AcquisitionEngine::stopAcquisition()
 {
@@ -144,7 +134,6 @@ void AcquisitionEngine::stopAcquisition()
     m_rhxController->flush();
     m_continuousRunning = false;   // ⭐ 关键
 
-
     emit logMessage("采集已停止");
 }
 
@@ -156,8 +145,9 @@ void AcquisitionEngine::onUsbTimer()
     int blocksToRead = RHXDataBlock::blocksFor30Hz(
         SampleRate30000Hz);
 
+    // 这里你原来写死 16，也可以换成 blocksToRead
     bool usbDataRead =
-        m_rhxController->readDataBlocks(16, m_dataQueue);
+        m_rhxController->readDataBlocks(blocksToRead, m_dataQueue);
 
     if (!usbDataRead && !m_rhxController->isRunning()) {
         // 没有更多数据，可能被停止了
@@ -174,11 +164,6 @@ void AcquisitionEngine::processDataQueue()
     if (!m_deviceOpened) return;
     if (m_dataQueue.empty()) return;
 
-    // RHX 每个 data stream 对应设备上的一个“采集端口”
-    // 对于你目前的实验设计：
-    //   stream0 = A 端
-    //   stream1 = B 端
-    //
     // getNumEnabledDataStreams() 是实际启用的 stream 数量。
     int numStreams = m_rhxController->getNumEnabledDataStreams();
     if (numStreams <= 0) return;
@@ -186,18 +171,11 @@ void AcquisitionEngine::processDataQueue()
     // streamIdx0 永远指向第一个启用的流（A 端）
     const int streamIdx0 = 0;
 
-    // 如果启用了第二个流，则它是 streamIdx1（B 端），否则设为 -1
+    // 如果启用了第二个流，则它是 streamIdx1（第二个启用的流），否则设为 -1
     const int streamIdx1 = (numStreams > 1) ? 1 : -1;
 
     // ============================================================
     // 主循环：每次处理队列中的一个 RHXDataBlock
-    //
-    // m_dataQueue（由 onUsbTimer() 填充）可能包含多个 block。
-    // 我们需要依次处理：
-    //   - 提取时间戳
-    //   - 提取每个通道的原始 ADC 数据
-    //   - 发射信号给 GUI / 算法
-    //   - 写入录制文件（如果录制开启）
     // ============================================================
     while (!m_dataQueue.empty()) {
         RHXDataBlock *block = m_dataQueue.front();
@@ -210,89 +188,65 @@ void AcquisitionEngine::processDataQueue()
         // 处理 stream 0（A 端）
         // ------------------------------------------------------------
 
-        // 准备时间戳缓存（和样本数一致）
+        // 时间戳缓存
         QVector<uint32_t> timeStamps0(samplesPerBlock);
 
-        // 准备数据缓存：通道数 × samplesPerBlock 大小的矩阵
+        // 数据缓存：通道数 × samplesPerBlock
         QVector<QVector<int>> channelData0(
             m_channelsPerStream,
             QVector<int>(samplesPerBlock));
 
         // 遍历 block 中的每个样本点
         for (int t = 0; t < samplesPerBlock; ++t) {
-
-            // ⭐ 时间戳的来源：
-            // Intan 固件对采样序号进行计数，每个样本点对应一个 timestamp。
-            // timestamp 单位 = “采样点数（sample index）”
-            // 若采样率为 30000 Hz，则 timestamp / 30000.0 = 秒
+            // timestamp 单位 = sample index
             timeStamps0[t] = block->timeStamp(t);
 
             // 读取每个通道的放大器数据（原始 16-bit ADC）
             for (int ch = 0; ch < m_channelsPerStream; ++ch) {
-
-                // amplifierData(streamIndex, channelIndex, sampleIndex)
                 int value = block->amplifierData(streamIdx0, ch, t);
-
-                // 先不转 µV，在 GUI 或算法里再转:
+                // 不转 uV，在 GUI 或算法层再转：
                 //   uV = (value - 32768) * 0.195
                 channelData0[ch][t] = value;
             }
         }
 
-        // 1) 发射信号给 GUI（实时波形）与闭环算法（ABAlgorithm）
-        // GUI 会在 handleNewSamples() 中将 timestamp 转换成秒，并绘制波形
+        // 1) 发射信号给 GUI（实时波形）与闭环算法
         emit newSamples(timeStamps0, channelData0);
 
-        // 2) 如若正在录制，将 A 端数据写入文件
-        // 这里 streamIndexInFile=0，是你录制系统的逻辑编号
-        if (m_isRecording) {
-            writeBlockToRecording(
-                /*streamIndexInFile=*/0,
-                timeStamps0,
-                channelData0);
-        }
-
         // ------------------------------------------------------------
-        // 处理 stream 2（B 端）——如果存在第二个数据流
+        // 处理第二个数据流（例如 B 端 / stream2）——如果存在
         // ------------------------------------------------------------
         if (streamIdx1 >= 0) {
-
             QVector<uint32_t> timeStamps2(samplesPerBlock);
             QVector<QVector<int>> channelData2(
                 m_channelsPerStream,
                 QVector<int>(samplesPerBlock));
 
             for (int t = 0; t < samplesPerBlock; ++t) {
-
-                // ⭐ 注意：A 端和 B 端共享同一个 timestamp
-                // 因为 Intan 的所有 channel 使用同一个采样时钟
+                // 所有流共享同一个时间戳
                 timeStamps2[t] = block->timeStamp(t);
 
-                // 提取 B 端各通道的原始 ADC
                 for (int ch = 0; ch < m_channelsPerStream; ++ch) {
                     int value = block->amplifierData(streamIdx1, ch, t);
                     channelData2[ch][t] = value;
                 }
             }
 
-            // 1) 通知 GUI（单独的 stream2 波形窗口）
+            // GUI 用的第二路波形
             emit newSamplesStream2(timeStamps2, channelData2);
+        }
 
-            // 2) 写入录制文件，逻辑编号为 2（你定义的 B 端 ID）
-            if (m_isRecording) {
-                writeBlockToRecording(
-                    /*streamIndexInFile=*/2,
-                    timeStamps2,
-                    channelData2);
-            }
+        // ------------------------------------------------------------
+        // 录制：直接按 Intan 官方格式把整个 block 写入文件
+        // ------------------------------------------------------------
+        if (m_isRecording) {
+            writeBlockToRecording(block);
         }
 
         // 释放 block
         delete block;
     }
 }
-
-
 
 void AcquisitionEngine::pauseContinuousForStim()
 {
@@ -301,6 +255,7 @@ void AcquisitionEngine::pauseContinuousForStim()
     m_usbTimer.stop();
     emit logMessage("自适应刺激：仅暂停 USB 读取，板上采集不停");
 }
+
 void AcquisitionEngine::resumeContinuousAfterStim()
 {
     if (!m_deviceOpened) return;
@@ -308,48 +263,21 @@ void AcquisitionEngine::resumeContinuousAfterStim()
     emit logMessage("自适应刺激：恢复 USB 读取");
 }
 
-void AcquisitionEngine::writeBlockToRecording(
-    int streamIndex,
-    const QVector<uint32_t> &timeStamps,
-    const QVector<QVector<int>> &channelData)
+// ⭐ 关键：使用 RHXDataBlock::write() 写原生二进制格式
+void AcquisitionEngine::writeBlockToRecording(RHXDataBlock *block)
 {
     if (!m_isRecording) return;
-    if (!m_recordFile.isOpen()) return;
-    if (timeStamps.isEmpty() || channelData.isEmpty()) return;
+    if (!m_recordStream.is_open()) return;
+    if (!block) return;
 
-    int numSamples  = timeStamps.size();
-    int numChannels = channelData.size();
+    int numStreams = m_rhxController->getNumEnabledDataStreams();
 
-    if (numSamples <= 0 || numChannels <= 0) return;
-
-    // ===== 写 Block 头 =====
-    quint8 streamIdx = quint8(streamIndex);
-    quint8 reserved[3] = {0,0,0};
-
-    m_recordStream << streamIdx;
-    m_recordStream.writeRawData(reinterpret_cast<const char*>(reserved), 3);
-
-    m_recordStream << quint32(numChannels);
-    m_recordStream << quint32(numSamples);
-
-    // ===== 写数据：逐 sample 写 =====
-    for (int i = 0; i < numSamples; ++i) {
-        // timestamp
-        m_recordStream << quint32(timeStamps[i]);
-
-        // 各通道原始值（int16）
-        for (int ch = 0; ch < numChannels; ++ch) {
-            qint16 raw = qint16(channelData[ch][i]);
-            m_recordStream << raw;
-        }
-    }
-
-    // 这里不强制 flush，性能会好一点；如果你怕掉电丢数据，可以偶尔 flush 一次：
-    // m_recordStream.device()->flush();
+    // 这和示例里的 queueToFile 在底层是一致的：按 Intan 定义格式写一个 USB data block
+    block->write(m_recordStream, numStreams);
 }
 
-
 // ====== 刺激相关接口 ======
+
 void AcquisitionEngine::configureStim(const QString &electrodeName,
                                       int firstPhaseAmplitude,
                                       int secondPhaseAmplitude,
@@ -361,7 +289,7 @@ void AcquisitionEngine::configureStim(const QString &electrodeName,
 {
     if (!m_deviceOpened || !m_stimController) return;
 
-    // ✅ 如果板子此刻正在 continuous run，就拒绝配置，避免把模式搞乱
+    // 如果板子此刻正在 continuous run，这里只是提示，不强制停
     if (m_rhxController->isRunning()) {
         emit logMessage("当前在连续采集中。");
     }
@@ -384,15 +312,13 @@ void AcquisitionEngine::configureStim(const QString &electrodeName,
     m_rhxController->setStimCmdMode(true);
 }
 
-
 void AcquisitionEngine::triggerStim(int triggerSource, bool on)
 {
     if (!m_deviceOpened || !m_stimController) return;
 
-    // 直接用你已有的接口
+    // 直接用你已有的接口（注意这里你原来是 triggerSource-24，看你整体工程怎么定义）
     m_stimController->stimTrigger(triggerSource-24, on);
 }
-
 
 void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
                                           int amplitude_uA,
@@ -402,7 +328,7 @@ void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
     if (!m_deviceOpened || !m_stimController) return;
     if (amplitude_uA <= 0 || numPulses <= 0) return;
 
-    // ===== 1）如果当前正在连续采集，先暂停 =====
+    // ===== 1）如果当前正在连续采集，先暂停 USB 读取 =====
     bool resumeAfter = m_continuousRunning;
     if (resumeAfter) {
         emit logMessage("自适应刺激：更新刺激参数…");
@@ -410,7 +336,6 @@ void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
     }
 
     // ===== 2）正式配置刺激并触发 =====
-
     int firstDur_us   = 500;
     int secondDur_us  = 500;
     int interphase_us = 500;
@@ -425,7 +350,7 @@ void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
                   triggerSource);
 
     // 触发一次刺激
-    qDebug()<<"当前触发:"<<triggerSource;
+    qDebug() << "当前触发:" << triggerSource;
     m_stimController->stimTrigger(triggerSource, true);
     m_stimController->stimTrigger(triggerSource, false);
 
@@ -440,6 +365,9 @@ void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
         resumeContinuousAfterStim();
     }
 }
+
+// ====== 录制控制 ======
+
 bool AcquisitionEngine::startBinaryRecording(const QString &filePath)
 {
     if (!m_deviceOpened) {
@@ -452,38 +380,16 @@ bool AcquisitionEngine::startBinaryRecording(const QString &filePath)
         stopBinaryRecording();
     }
 
-    m_recordFile.setFileName(filePath);
-    if (!m_recordFile.open(QIODevice::WriteOnly)) {
+    // ⭐ 按示例 main.cpp 的方式打开二进制文件
+    m_recordStream.open(filePath.toStdString(),
+                        std::ios::binary | std::ios::out);
+
+    if (!m_recordStream.is_open()) {
         emit errorOccurred("无法打开录制文件：" + filePath);
         return false;
     }
 
-    m_recordStream.setDevice(&m_recordFile);
-    m_recordStream.setByteOrder(QDataStream::LittleEndian);
-
-    // ===== 写文件头 =====
-    char magic[8] = {'B','A','R','E','C','0','1','\0'};
-    m_recordStream.writeRawData(magic, 8);
-
-    quint32 version           = 1;
-    float   sampleRateHz      = float(m_rhxController->getSampleRate());
-    quint32 channelsPerStream = quint32(m_channelsPerStream);
-
-    // 假设你只用 stream0 和 stream2：mask = bit0 + bit2
-    quint32 streamMask        = 0;
-    streamMask |= (1u << 0);  // stream0
-    streamMask |= (1u << 2);  // stream2
-
-    m_recordStream << version;
-    m_recordStream << sampleRateHz;
-    m_recordStream << channelsPerStream;
-    m_recordStream << streamMask;
-
-    // 4 个 reserved，占位
-    for (int i = 0; i < 4; ++i) {
-        m_recordStream << quint32(0);
-    }
-
+    // 不写任何自定义文件头，直接写 Intan 原生数据块
     m_isRecording = true;
     emit logMessage("开始二进制录制：" + filePath);
     return true;
@@ -491,15 +397,15 @@ bool AcquisitionEngine::startBinaryRecording(const QString &filePath)
 
 void AcquisitionEngine::stopBinaryRecording()
 {
-    if (!m_isRecording) return;
+    if (!m_isRecording)
+        return;
 
     m_isRecording = false;
-    if (m_recordFile.isOpen()) {
-        m_recordFile.close();
+
+    if (m_recordStream.is_open()) {
+        m_recordStream.close();
     }
 
     emit logMessage("二进制录制已停止");
 }
-
-
 

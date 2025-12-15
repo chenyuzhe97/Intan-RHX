@@ -6,9 +6,9 @@
 #include <QVector>
 #include <deque>
 #include <QDebug>
-#include <QFile>
-#include <QDataStream>
 #include <QThread>
+
+#include <fstream>  // ⭐ 使用 std::ofstream 进行二进制保存
 
 #include "okFrontPanel.h"
 #include "rhxcontroller.h"
@@ -18,7 +18,6 @@
 
 // 后面我们先只用 stream 0，如果你打开多个 stream，再扩展即可
 
-
 class AcquisitionEngine : public QObject
 {
     Q_OBJECT
@@ -27,7 +26,8 @@ public:
 
     ~AcquisitionEngine()
     {
-        stopBinaryRecording();  // 先把录制关掉
+        // 先把录制关掉，再停采集，最后清理资源
+        stopBinaryRecording();
         stopAcquisition();
         cleanup();
     }
@@ -43,7 +43,6 @@ public:
     void stopAcquisition();
 
     // 简单的刺激配置接口：把电极参数交给底层 Controller
-    // 这里直接用你已有的 Controller / ElectrodeParameters 风格
     void configureStim(const QString &electrodeName,
                        int firstPhaseAmplitude,
                        int secondPhaseAmplitude,
@@ -56,28 +55,28 @@ public:
     // 触发某个 triggerSource 的刺激
     void triggerStim(int triggerSource, bool on);
 
-    // ⭐ 新增：根据算法结果构造刺激并触发
+    // ⭐ 根据算法结果构造刺激并触发
     void applyAdaptiveStim(const QString &electrodeName,
                            int amplitude_uA,
                            int numPulses,
                            int triggerSource);
 
-    // 暴露底层指针，方便以后复杂操作
+    // 暴露底层指针
     RHXController* rhx() const { return m_rhxController; }
     Controller* stimController() const { return m_stimController; }
 
+    // 二进制录制控制
     bool startBinaryRecording(const QString &filePath);
     void stopBinaryRecording();
 
 signals:
-    // 原来就有的：
+    // 原来就有的：主数据流新数据（比如 stream0）
     void newSamples(const QVector<uint32_t> &timeStamps,
                     const QVector<QVector<int>> &channelData);
 
-    // ⭐ 新增：专门给 stream2 用的信号（第二路 data stream）
+    // ⭐ 给第二个数据流（例如 B 端 / stream2）用的信号
     void newSamplesStream2(const QVector<uint32_t> &timeStamps,
                            const QVector<QVector<int>> &channelData);
-
 
     // 状态/错误信息
     void errorOccurred(const QString &msg);
@@ -91,24 +90,24 @@ private:
     void processDataQueue();
     void pauseContinuousForStim();      // 只暂停连续采集（给刺激用）
     void resumeContinuousAfterStim();   // 刺激后恢复连续采集
-    void writeBlockToRecording(int streamIndex,
-                               const QVector<uint32_t> &timeStamps,
-                               const QVector<QVector<int>> &channelData);
+
+    // ⭐ 新的录制函数：直接将一个 RHXDataBlock 按 Intan 官方格式写入文件
+    void writeBlockToRecording(RHXDataBlock *block);
 
 private:
     RHXController   *m_rhxController   = nullptr;
     Controller      *m_stimController  = nullptr;
 
-    QFile       m_recordFile;
-    QDataStream m_recordStream;
-    bool        m_isRecording = false;
+    // ⭐ 使用 std::ofstream 直接写 Intan 原生二进制数据
+    std::ofstream   m_recordStream;
+    bool            m_isRecording = false;
 
-
-    QTimer           m_usbTimer;
-    std::deque<RHXDataBlock*> m_dataQueue;
+    QTimer                     m_usbTimer;
+    std::deque<RHXDataBlock*>  m_dataQueue;
 
     bool m_continuousRunning = false;   // 当前是否处于连续采集模式
-    bool m_deviceOpened = false;
+    bool m_deviceOpened      = false;
     int  m_numEnabledStreams = 0;
-    int  m_channelsPerStream = 16; // 对 RHS，官方文档就是 16
+    int  m_channelsPerStream = 16;      // 对 RHS，官方文档就是 16
 };
+
