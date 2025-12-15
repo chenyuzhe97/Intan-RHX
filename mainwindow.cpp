@@ -83,6 +83,38 @@ void MainWindow::setupUi()
     chLayout0->addStretch(1);
     m_layout->addLayout(chLayout0);
 
+    // ⭐⭐ 新增：单通道 Y 轴范围控制
+    QHBoxLayout *yCtrlLayout = new QHBoxLayout();
+    m_chkAutoY = new QCheckBox(tr("Y 轴自适应"), this);
+    m_chkAutoY->setChecked(true);   // 默认自适应
+
+    m_spinYMin = new QDoubleSpinBox(this);
+    m_spinYMax = new QDoubleSpinBox(this);
+
+    m_spinYMin->setRange(-1e6, 1e6);
+    m_spinYMax->setRange(-1e6, 1e6);
+    m_spinYMin->setDecimals(1);
+    m_spinYMax->setDecimals(1);
+    m_spinYMin->setValue(m_fixedYMin);
+    m_spinYMax->setValue(m_fixedYMax);
+    m_spinYMin->setSuffix(" µV");
+    m_spinYMax->setSuffix(" µV");
+
+    // 初始时因为是“自适应”，禁用两个 spinBox
+    m_spinYMin->setEnabled(false);
+    m_spinYMax->setEnabled(false);
+
+    yCtrlLayout->addWidget(m_chkAutoY);
+    yCtrlLayout->addWidget(new QLabel(tr("Ymin:"), this));
+    yCtrlLayout->addWidget(m_spinYMin);
+    yCtrlLayout->addWidget(new QLabel(tr("Ymax:"), this));
+    yCtrlLayout->addWidget(m_spinYMax);
+    yCtrlLayout->addStretch(1);
+
+    m_layout->addLayout(yCtrlLayout);
+
+    // 通道2未添加
+
     // ⭐⭐⭐ 这里加一行带通滤波控件
     QHBoxLayout *bpLayout = new QHBoxLayout();
     m_chkBandpass = new QCheckBox(tr("带通滤波"), this);
@@ -115,16 +147,68 @@ void MainWindow::setupUi()
 
     // ===== Stream2 单通道：通道选择 + 图，占位 =====
     // 通道下拉框（stream2）
+    // ===== Stream2 单通道：通道选择 =====
     QHBoxLayout *chLayout2 = new QHBoxLayout();
     QLabel *label2 = new QLabel(tr("Stream 2 通道："), this);
     m_comboStream2Ch = new QComboBox(this);
-    for (int ch = 0; ch < 16; ++ch) {   // 一个 data stream 16 个通道
+    for (int ch = 0; ch < NUM_CH_STREAM2; ++ch) {
         m_comboStream2Ch->addItem(QString("CH%1").arg(ch), ch);
     }
     chLayout2->addWidget(label2);
     chLayout2->addWidget(m_comboStream2Ch);
     chLayout2->addStretch(1);
     m_layout->addLayout(chLayout2);
+
+    // ⭐⭐ Stream2 Y 轴范围控制
+    QHBoxLayout *y2Layout = new QHBoxLayout();
+    m_chkAutoY2 = new QCheckBox(tr("Y 轴自适应 (Stream2)"), this);
+    m_chkAutoY2->setChecked(true);
+
+    m_spinY2Min = new QDoubleSpinBox(this);
+    m_spinY2Max = new QDoubleSpinBox(this);
+    m_spinY2Min->setRange(-1e6, 1e6);
+    m_spinY2Max->setRange(-1e6, 1e6);
+    m_spinY2Min->setDecimals(1);
+    m_spinY2Max->setDecimals(1);
+    m_spinY2Min->setValue(m_fixedY2Min);
+    m_spinY2Max->setValue(m_fixedY2Max);
+    m_spinY2Min->setSuffix(" µV");
+    m_spinY2Max->setSuffix(" µV");
+    m_spinY2Min->setEnabled(false);
+    m_spinY2Max->setEnabled(false);
+
+    y2Layout->addWidget(m_chkAutoY2);
+    y2Layout->addWidget(new QLabel(tr("Ymin:"), this));
+    y2Layout->addWidget(m_spinY2Min);
+    y2Layout->addWidget(new QLabel(tr("Ymax:"), this));
+    y2Layout->addWidget(m_spinY2Max);
+    y2Layout->addStretch(1);
+    m_layout->addLayout(y2Layout);
+
+    // ⭐⭐ Stream2 带通滤波控件
+    QHBoxLayout *bp2Layout = new QHBoxLayout();
+    m_chkBandpass2 = new QCheckBox(tr("带通滤波 (Stream2)"), this);
+    m_spinBp2Low   = new QDoubleSpinBox(this);
+    m_spinBp2High  = new QDoubleSpinBox(this);
+
+    m_spinBp2Low->setRange(1.0, 10000.0);
+    m_spinBp2Low->setDecimals(1);
+    m_spinBp2Low->setValue(m_bp2LowHz);
+    m_spinBp2Low->setSuffix(" Hz");
+
+    m_spinBp2High->setRange(10.0, 15000.0);
+    m_spinBp2High->setDecimals(1);
+    m_spinBp2High->setValue(m_bp2HighHz);
+    m_spinBp2High->setSuffix(" Hz");
+
+    bp2Layout->addWidget(m_chkBandpass2);
+    bp2Layout->addWidget(new QLabel(tr("低截止"), this));
+    bp2Layout->addWidget(m_spinBp2Low);
+    bp2Layout->addWidget(new QLabel(tr("高截止"), this));
+    bp2Layout->addWidget(m_spinBp2High);
+    bp2Layout->addStretch(1);
+    m_layout->addLayout(bp2Layout);
+
 
     // 图本身在 setupStream2Plot() 里插入
 
@@ -155,6 +239,20 @@ void MainWindow::setupUi()
             this,
             &MainWindow::onChannelChanged);
 
+    // ⭐ Y 轴自动/固定切换 + 范围修改
+    connect(m_chkAutoY, &QCheckBox::toggled,
+            this,        &MainWindow::onAutoYChanged);
+
+    connect(m_spinYMin,
+            QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this,
+            &MainWindow::onYRangeEdited);
+
+    connect(m_spinYMax,
+            QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this,
+            &MainWindow::onYRangeEdited);
+
     // ===== 带通滤波勾选 & 参数变化 =====
     connect(m_chkBandpass, &QCheckBox::toggled,
             this,          &MainWindow::onBandpassToggled);
@@ -177,6 +275,31 @@ void MainWindow::setupUi()
                 m_bufferStream2.clear();
                 if (m_seriesStream2) m_seriesStream2->clear();
             });
+
+    // Stream2 Y 轴
+    connect(m_chkAutoY2, &QCheckBox::toggled,
+            this,        &MainWindow::onAutoY2Changed);
+    connect(m_spinY2Min,
+            QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this,
+            &MainWindow::onY2RangeEdited);
+    connect(m_spinY2Max,
+            QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this,
+            &MainWindow::onY2RangeEdited);
+
+    // Stream2 带通
+    connect(m_chkBandpass2, &QCheckBox::toggled,
+            this,           &MainWindow::onBandpass2Toggled);
+    connect(m_spinBp2Low,
+            QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this,
+            &MainWindow::onBandpass2ParamChanged);
+    connect(m_spinBp2High,
+            QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this,
+            &MainWindow::onBandpass2ParamChanged);
+
 }
 
 void MainWindow::setupSinglePlot()
@@ -457,7 +580,6 @@ void MainWindow::onABEpochReady(int phaseIndex,
 }
 
 
-
 void MainWindow::handleNewSamples(const QVector<uint32_t> &timeStamps,
                                   const QVector<QVector<int>> &channelData)
 {
@@ -482,11 +604,9 @@ void MainWindow::handleNewSamples(const QVector<uint32_t> &timeStamps,
     // 2) 如果勾选了带通滤波，就先滤波
     QVector<double> y;
     if (m_enableBandpass && m_abAlgo) {
-        // 当前采样率 30kHz（或你实际的采样率）
-        m_abAlgo->setSampleRateHz(m_sampleRate);     // 如果你没有 m_sampleRate，就写 30000.0
+        m_abAlgo->setSampleRateHz(m_sampleRate);     // 或者 30000.0
         y = m_abAlgo->bandPassFilter(uVfull, m_bpLowHz, m_bpHighHz);
 
-        // 防御：bandPassFilter 如果因为参数错误返回空，退回原始信号
         if (y.size() != Nsingle) {
             y = uVfull;
         }
@@ -515,23 +635,26 @@ void MainWindow::handleNewSamples(const QVector<uint32_t> &timeStamps,
         m_buffer.removeFirst();
     }
 
-    // 用这一小段 buffer 更新曲线
+    // ⭐⭐ 别忘了：用 buffer 更新曲线
     m_series->replace(m_buffer);
 
-    // 自适应 Y 轴范围
-    double yMin = m_buffer.first().y();
-    double yMax = yMin;
-    for (const auto &p : m_buffer) {
-        if (p.y() < yMin) yMin = p.y();
-        if (p.y() > yMax) yMax = p.y();
+    // Y 轴范围：自适应 或 固定
+    if (m_autoY) {
+        double yMin = m_buffer.first().y();
+        double yMax = yMin;
+        for (const auto &p : m_buffer) {
+            if (p.y() < yMin) yMin = p.y();
+            if (p.y() > yMax) yMax = p.y();
+        }
+        double margin = 0.1 * (yMax - yMin + 1e-9);
+        m_axisY->setRange(yMin - margin, yMax + margin);
+    } else {
+        m_axisY->setRange(m_fixedYMin, m_fixedYMax);
     }
-    double margin = 0.1 * (yMax - yMin + 1e-9);
-    m_axisY->setRange(yMin - margin, yMax + margin);
 
     // X 轴固定滑动窗口
     m_axisX->setRange(tMin, tMax);
 }
-
 
 void MainWindow::handleNewSamplesStream2(const QVector<uint32_t> &timeStamps,
                                          const QVector<QVector<int>> &channelData)
@@ -540,7 +663,7 @@ void MainWindow::handleNewSamplesStream2(const QVector<uint32_t> &timeStamps,
     if (timeStamps.isEmpty()) return;
 
     int numCh = channelData.size();
-    int N = timeStamps.size();
+    int N     = timeStamps.size();
     if (N <= 0) return;
 
     int chSel = qBound(0, m_currentChStream2, numCh - 1);
@@ -548,21 +671,36 @@ void MainWindow::handleNewSamplesStream2(const QVector<uint32_t> &timeStamps,
     int Nsingle = qMin(N, chData.size());
     if (Nsingle <= 0) return;
 
-    const int decim = 30;  // 下采样，减负载
+    // 1) 整段转成 µV
+    QVector<double> uVfull(Nsingle);
+    for (int i = 0; i < Nsingle; ++i) {
+        uVfull[i] = (double(chData[i]) - 32768.0) * 0.195;
+    }
+
+    // 2) 带通滤波（Stream2 独立控制）
+    QVector<double> y;
+    if (m_enableBandpass2 && m_abAlgo) {
+        m_abAlgo->setSampleRateHz(m_sampleRate);  // 或 30000.0
+        y = m_abAlgo->bandPassFilter(uVfull, m_bp2LowHz, m_bp2HighHz);
+        if (y.size() != Nsingle) {
+            y = uVfull;
+        }
+    } else {
+        y = uVfull;
+    }
+
+    const int decim = 30;
 
     for (int i = 0; i < Nsingle; i += decim) {
         uint32_t ts = timeStamps[i];
-        int raw      = chData[i];
-
         double tSec = double(ts) / m_sampleRate;
-        double uV   = (double(raw) - 32768.0) * 0.195;
+        double val  = y[i];
 
-        m_bufferStream2.append(QPointF(tSec, uV));
+        m_bufferStream2.append(QPointF(tSec, val));
     }
 
     if (m_bufferStream2.isEmpty()) return;
 
-    // 只保留最近 m_stream2WindowSec 秒
     double tMax = m_bufferStream2.last().x();
     double tMin = tMax - m_stream2WindowSec;
     if (tMin < 0.0) tMin = 0.0;
@@ -571,22 +709,26 @@ void MainWindow::handleNewSamplesStream2(const QVector<uint32_t> &timeStamps,
         m_bufferStream2.removeFirst();
     }
 
-    // 更新曲线
+    // ⭐ 更新曲线
     m_seriesStream2->replace(m_bufferStream2);
 
-    // 自动 Y 轴范围
-    double yMin = m_bufferStream2.first().y();
-    double yMax = yMin;
-    for (const auto &p : m_bufferStream2) {
-        if (p.y() < yMin) yMin = p.y();
-        if (p.y() > yMax) yMax = p.y();
+    // Y 轴：自适应 / 固定
+    if (m_autoY2) {
+        double yMin = m_bufferStream2.first().y();
+        double yMax = yMin;
+        for (const auto &p : m_bufferStream2) {
+            if (p.y() < yMin) yMin = p.y();
+            if (p.y() > yMax) yMax = p.y();
+        }
+        double margin = 0.1 * (yMax - yMin + 1e-9);
+        m_axisY2->setRange(yMin - margin, yMax + margin);
+    } else {
+        m_axisY2->setRange(m_fixedY2Min, m_fixedY2Max);
     }
-    double margin = 0.1 * (yMax - yMin + 1e-9);
-    m_axisY2->setRange(yMin - margin, yMax + margin);
 
-    // X 轴范围
     m_axisX2->setRange(tMin, tMax);
 }
+
 
 
 void MainWindow::handleError(const QString &msg)
@@ -663,3 +805,133 @@ void MainWindow::onBandpassParamChanged(double /*value*/)
                   .arg(m_bpHighHz));
 }
 
+void MainWindow::onAutoYChanged(bool checked)
+{
+    m_autoY = checked;
+
+    // 控制输入框是否可用
+    m_spinYMin->setEnabled(!checked);
+    m_spinYMax->setEnabled(!checked);
+
+    if (checked) {
+        appendLog("单通道 Y 轴：已切换为自适应");
+        // 下次刷新时会自动按数据范围缩放，这里不用立刻动 axis
+    } else {
+        appendLog(QString("单通道 Y 轴：已切换为固定 [%1, %2] µV")
+                      .arg(m_fixedYMin)
+                      .arg(m_fixedYMax));
+
+        // 立即应用当前固定范围
+        if (m_axisY) {
+            m_axisY->setRange(m_fixedYMin, m_fixedYMax);
+        }
+    }
+}
+
+void MainWindow::onYRangeEdited(double /*value*/)
+{
+    double ymin = m_spinYMin->value();
+    double ymax = m_spinYMax->value();
+
+    // 不允许 ymin >= ymax，自动调一下
+    if (ymin >= ymax) {
+        std::swap(ymin, ymax);
+
+        m_spinYMin->blockSignals(true);
+        m_spinYMax->blockSignals(true);
+        m_spinYMin->setValue(ymin);
+        m_spinYMax->setValue(ymax);
+        m_spinYMin->blockSignals(false);
+        m_spinYMax->blockSignals(false);
+    }
+
+    m_fixedYMin = ymin;
+    m_fixedYMax = ymax;
+
+    // 如果当前是“固定”模式，立刻更新图
+    if (!m_autoY && m_axisY) {
+        m_axisY->setRange(m_fixedYMin, m_fixedYMax);
+    }
+}
+
+void MainWindow::onAutoY2Changed(bool checked)
+{
+    m_autoY2 = checked;
+
+    m_spinY2Min->setEnabled(!checked);
+    m_spinY2Max->setEnabled(!checked);
+
+    if (checked) {
+        appendLog("Stream2 Y 轴：已切换为自适应");
+    } else {
+        appendLog(QString("Stream2 Y 轴：已切换为固定 [%1, %2] µV")
+                      .arg(m_fixedY2Min)
+                      .arg(m_fixedY2Max));
+        if (m_axisY2) {
+            m_axisY2->setRange(m_fixedY2Min, m_fixedY2Max);
+        }
+    }
+}
+
+void MainWindow::onY2RangeEdited(double /*value*/)
+{
+    double ymin = m_spinY2Min->value();
+    double ymax = m_spinY2Max->value();
+
+    if (ymin >= ymax) {
+        std::swap(ymin, ymax);
+        m_spinY2Min->blockSignals(true);
+        m_spinY2Max->blockSignals(true);
+        m_spinY2Min->setValue(ymin);
+        m_spinY2Max->setValue(ymax);
+        m_spinY2Min->blockSignals(false);
+        m_spinY2Max->blockSignals(false);
+    }
+
+    m_fixedY2Min = ymin;
+    m_fixedY2Max = ymax;
+
+    if (!m_autoY2 && m_axisY2) {
+        m_axisY2->setRange(m_fixedY2Min, m_fixedY2Max);
+    }
+}
+
+void MainWindow::onBandpass2Toggled(bool checked)
+{
+    m_enableBandpass2 = checked;
+
+    if (checked) {
+        appendLog(QString("Stream2 带通滤波：开启 [%1 - %2] Hz")
+                      .arg(m_bp2LowHz)
+                      .arg(m_bp2HighHz));
+    } else {
+        appendLog("Stream2 带通滤波：关闭");
+    }
+
+    // 切换时清理 Stream2 图像缓存
+    m_bufferStream2.clear();
+    if (m_seriesStream2) m_seriesStream2->clear();
+}
+
+void MainWindow::onBandpass2ParamChanged(double /*value*/)
+{
+    double low  = m_spinBp2Low->value();
+    double high = m_spinBp2High->value();
+
+    if (low >= high) {
+        std::swap(low, high);
+        m_spinBp2Low->blockSignals(true);
+        m_spinBp2High->blockSignals(true);
+        m_spinBp2Low->setValue(low);
+        m_spinBp2High->setValue(high);
+        m_spinBp2Low->blockSignals(false);
+        m_spinBp2High->blockSignals(false);
+    }
+
+    m_bp2LowHz  = low;
+    m_bp2HighHz = high;
+
+    appendLog(QString("更新 Stream2 带通范围: [%1 - %2] Hz")
+                  .arg(m_bp2LowHz)
+                  .arg(m_bp2HighHz));
+}

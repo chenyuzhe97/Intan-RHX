@@ -17,8 +17,6 @@
 #include <QtCharts/QLineSeries>
 #include <QtCharts/QValueAxis>
 
-// Qt6 一般用 namespace QtCharts;
-
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -46,19 +44,31 @@ private slots:
     void handleError(const QString &msg);
     void handleLog(const QString &msg);
 
-    // ⭐ 新增：通道选择变化时
+    // 单通道（Stream0）通道选择
     void onChannelChanged(int index);
     void onStimOnce();
 
+    // Stream0 带通滤波
     void onBandpassToggled(bool checked);
     void onBandpassParamChanged(double value);
 
+    // Stream0 Y 轴范围
+    void onAutoYChanged(bool checked);
+    void onYRangeEdited(double value);
+
+    // ⭐ 新增：Stream2 Y 轴范围
+    void onAutoY2Changed(bool checked);
+    void onY2RangeEdited(double value);
+
+    // ⭐ 新增：Stream2 带通滤波
+    void onBandpass2Toggled(bool checked);
+    void onBandpass2ParamChanged(double value);
+
 private:
     void setupUi();
-    void setupSinglePlot();   // ⭐ 单通道图
-    void setupStream2Plot();   // ⭐ 新增：stream2 多通道图
-
-    void setupMultiPlot();    // ⭐ 多通道图
+    void setupSinglePlot();    // Stream0 单通道图
+    void setupStream2Plot();   // Stream2 单通道图
+    void setupMultiPlot();     // 多通道图
     void appendLog(const QString &msg);
 
 private:
@@ -69,63 +79,84 @@ private:
     QPushButton      *m_btnStop = nullptr;
     QPushButton      *m_btnStim  = nullptr;
     QPushButton      *m_btnRecStart = nullptr;
-    QPushButton      *m_btnRecStop = nullptr;
+    QPushButton      *m_btnRecStop  = nullptr;
     QPlainTextEdit   *m_logView = nullptr;
 
-    AcquisitionEngine   *m_engine      = nullptr;
-    ABAlgorithm *m_abAlgo = nullptr;
-    ExperimentControllerAB *m_experiment = nullptr;
+    AcquisitionEngine        *m_engine     = nullptr;
+    ABAlgorithm              *m_abAlgo     = nullptr;
+    ExperimentControllerAB   *m_experiment = nullptr;
 
-    // ===== 单通道图（你原来的那套） =====
-    QChartView    *m_chartView = nullptr;
-    QChart        *m_chart     = nullptr;
-    QLineSeries   *m_series    = nullptr;
-    QValueAxis    *m_axisX     = nullptr;
-    QValueAxis    *m_axisY     = nullptr;
+    // ===== Stream0 单通道图 =====
+    QChartView      *m_chartView = nullptr;
+    QChart          *m_chart     = nullptr;
+    QLineSeries     *m_series    = nullptr;
+    QValueAxis      *m_axisX     = nullptr;
+    QValueAxis      *m_axisY     = nullptr;
     QVector<QPointF> m_buffer;
-    double m_visibleWindowSec = 2.0;
-    double m_sampleRate       = 30000.0;
+    double           m_visibleWindowSec = 2.0;
+    double           m_sampleRate       = 30000.0;
 
-    // ==== 带通滤波 UI ====
+    // ==== Stream0 带通滤波 UI ====
     QCheckBox      *m_chkBandpass = nullptr;
     QDoubleSpinBox *m_spinBpLow   = nullptr;
     QDoubleSpinBox *m_spinBpHigh  = nullptr;
 
-    // ==== 带通滤波参数 ====
+    // ==== Stream0 带通滤波参数 ====
     bool   m_enableBandpass = false;
     double m_bpLowHz        = 300.0;
     double m_bpHighHz       = 3000.0;
 
-    // ⭐ 新增：通道选择控件
-    QComboBox     *m_comboChannel = nullptr;
-    int            m_currentChannel = 0;    // 当前单通道视图使用的通道
+    // Stream0 通道选择
+    QComboBox  *m_comboChannel   = nullptr;
+    int         m_currentChannel = 0;
 
-
-    // ⭐ 新增：stream2 多通道图相关
-    QChartView   *m_chartViewStream2 = nullptr;
-    QChart       *m_chartStream2     = nullptr;
-    QLineSeries  *m_seriesStream2    = nullptr;
-    QValueAxis   *m_axisX2           = nullptr;
-    QValueAxis   *m_axisY2           = nullptr;
-    QComboBox    *m_comboStream2Ch   = nullptr;   // ⭐ 选择 stream2 的通道
-
-    int NUM_CH_STREAM2 = 16; // 每个 data stream 16 路放大器通道
+    // ===== Stream2 单通道图 =====
+    QChartView      *m_chartViewStream2 = nullptr;
+    QChart          *m_chartStream2     = nullptr;
+    QLineSeries     *m_seriesStream2    = nullptr;
+    QValueAxis      *m_axisX2           = nullptr;
+    QValueAxis      *m_axisY2           = nullptr;
+    QComboBox       *m_comboStream2Ch   = nullptr;
+    int              NUM_CH_STREAM2     = 16;
     QVector<QPointF> m_bufferStream2;
 
-    double m_stream2WindowSec = 2.0;      // 只看最近 2 s
-    int    m_currentChStream2 = 0;       // 当前选择的 stream2 通道（0~15）
+    double m_stream2WindowSec = 2.0;  // 只看最近 2 s
+    int    m_currentChStream2 = 0;    // 当前选择的 stream2 通道（0~15）
 
+    // ===== 多通道图 =====
+    int             NUM_CHANNELS   = 16;
+    QChartView     *m_multiChartView = nullptr;
+    QChart         *m_multiChart     = nullptr;
+    QValueAxis     *m_multiAxisX     = nullptr;
+    QValueAxis     *m_multiAxisY     = nullptr;
+    QVector<QLineSeries*>     m_multiSeries;
+    QVector<QVector<QPointF>> m_multiBuffers;
+    double          m_multiWindowSec = 2.0;
 
-    // ⭐ 新增：多通道图相关
-    int NUM_CHANNELS = 16;     // RHS 一条 stream 16 通道
+    // ==== Stream0 Y 轴范围控制 ====
+    QCheckBox      *m_chkAutoY    = nullptr;
+    QDoubleSpinBox *m_spinYMin    = nullptr;
+    QDoubleSpinBox *m_spinYMax    = nullptr;
 
-    QChartView    *m_multiChartView = nullptr;
-    QChart        *m_multiChart     = nullptr;
-    QValueAxis    *m_multiAxisX     = nullptr;
-    QValueAxis    *m_multiAxisY     = nullptr;
+    bool   m_autoY      = true;      // true = 自适应，false = 固定
+    double m_fixedYMin  = -7000.0;
+    double m_fixedYMax  =  7000.0;
 
-    // 每个通道一条曲线
-    QVector<QLineSeries*>        m_multiSeries;        // size = NUM_CHANNELS
-    QVector<QVector<QPointF>>    m_multiBuffers;       // size = NUM_CHANNELS
-    double m_multiWindowSec = 2.0;
+    // ==== Stream2 Y 轴范围控制 ====
+    QCheckBox      *m_chkAutoY2   = nullptr;
+    QDoubleSpinBox *m_spinY2Min   = nullptr;
+    QDoubleSpinBox *m_spinY2Max   = nullptr;
+
+    bool   m_autoY2     = true;
+    double m_fixedY2Min = -7000.0;
+    double m_fixedY2Max =  7000.0;
+
+    // ==== Stream2 带通滤波 UI + 参数 ====
+    QCheckBox      *m_chkBandpass2 = nullptr;
+    QDoubleSpinBox *m_spinBp2Low   = nullptr;
+    QDoubleSpinBox *m_spinBp2High  = nullptr;
+
+    bool   m_enableBandpass2 = false;
+    double m_bp2LowHz        = 300.0;
+    double m_bp2HighHz       = 3000.0;
 };

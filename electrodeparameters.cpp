@@ -95,7 +95,7 @@ void ElectrodeParameters::SetStimulationAmplitude(int firstPhaseAmplitude, int s
 
 void ElectrodeParameters::SetStimulationSource(int source)
 {
-    triggerSource = source + 16;
+    triggerSource = source + 24;
 }
 
 

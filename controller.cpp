@@ -25,12 +25,14 @@ void Controller::setStimSequenceParameters(ElectrodeParameters *parameters)
                                         parameters->enabled,
                                         1,
                                         0);
+    qDebug()<<"可否触发"<<parameters->enabled;
+    qDebug()<<"触发源："<<parameters->triggerSource;
 
     rhxController->configureStimPulses(stream,
                                        channel,
                                        numOfPulses,
                                        (StimShape)0,
-                                       0);
+                                       1);
 
     // ==== 2) 计算各个时间事件 ====
     int preStimAmpSettle      = parameters->preStimAmpSettle      / timestep;
@@ -129,20 +131,39 @@ void Controller::setStimSequenceParameters(ElectrodeParameters *parameters)
     rhxController->programStimReg(stream, channel, AbstractRHXController::EventAmpSettleOffRepeat, eventAmpSettleOffRepeat);
     rhxController->programStimReg(stream, channel, AbstractRHXController::EventEnd,                eventEnd);
 
+    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventAmpSettleOn,        0);
+    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventStartStim,          0);
+    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventStimPhase2,         3);
+    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventStimPhase3,         65535);
+    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventEndStim,            6);
+    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventRepeatStim,         65535);
+    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventAmpSettleOff,       36);
+    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventChargeRecovOn,      65535);
+    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventChargeRecovOff,     0);
+    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventAmpSettleOnRepeat,  65535);
+    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventAmpSettleOffRepeat, 30);
+    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventEnd,                36);
+
     rhxController->enableAuxCommandsOnOneStream(stream);
 
     // ==== 4) 设置幅度，生成并上传 Aux 命令序列（运行中也 OK） ====
     RHXRegisters chipRegisters(rhxController->getType(),
-                               rhxController->getSampleRate());
+                               rhxController->getSampleRate(),StimStepSize500nA);
     int commandSequenceLength;
     std::vector<unsigned int> commandList;
 
     // 你这边改过的：μA → Intan 刺激 DAC 代码的转换
+    qDebug()<<"原始刺激大小：" << parameters->firstPhaseAmplitude;
     int firstPhaseMagnitude  = qRound(parameters->firstPhaseAmplitude  / currentstep / 1000.0);
     int secondPhaseMagnitude = qRound(parameters->secondPhaseAmplitude / currentstep / 1000.0);
 
-    int posMag = firstPhaseMagnitude;
-    int negMag = secondPhaseMagnitude;
+    qDebug()<<"当前刺激大小:" <<firstPhaseMagnitude << "mv";
+
+    // int posMag = firstPhaseMagnitude;
+    // int negMag = secondPhaseMagnitude;
+
+    int posMag = parameters->firstPhaseAmplitude/5;
+    int negMag = parameters->secondPhaseAmplitude/5;
 
     commandSequenceLength =
         chipRegisters.createCommandListSetStimMagnitudes(commandList,

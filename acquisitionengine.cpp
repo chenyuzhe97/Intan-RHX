@@ -363,8 +363,7 @@ void AcquisitionEngine::configureStim(const QString &electrodeName,
 
     // ✅ 如果板子此刻正在 continuous run，就拒绝配置，避免把模式搞乱
     if (m_rhxController->isRunning()) {
-        emit logMessage("警告：当前在连续采集中，不能修改刺激参数，请先停止采集再配置刺激。");
-        return;
+        emit logMessage("当前在连续采集中。");
     }
 
     ElectrodeParameters *ele =
@@ -382,6 +381,7 @@ void AcquisitionEngine::configureStim(const QString &electrodeName,
     m_stimController->setStimSequenceParameters(ele);
 
     emit logMessage(QStringLiteral("已配置刺激电极 %1").arg(electrodeName));
+    m_rhxController->setStimCmdMode(true);
 }
 
 
@@ -390,7 +390,7 @@ void AcquisitionEngine::triggerStim(int triggerSource, bool on)
     if (!m_deviceOpened || !m_stimController) return;
 
     // 直接用你已有的接口
-    m_stimController->stimTrigger(triggerSource, on);
+    m_stimController->stimTrigger(triggerSource-24, on);
 }
 
 
@@ -425,7 +425,9 @@ void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
                   triggerSource);
 
     // 触发一次刺激
+    qDebug()<<"当前触发:"<<triggerSource;
     m_stimController->stimTrigger(triggerSource, true);
+    m_stimController->stimTrigger(triggerSource, false);
 
     emit logMessage(QStringLiteral("自适应刺激：%1, 幅度=%2 uA, 脉冲数=%3, trigger=%4")
                         .arg(electrodeName)

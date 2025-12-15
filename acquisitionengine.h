@@ -8,6 +8,7 @@
 #include <QDebug>
 #include <QFile>
 #include <QDataStream>
+#include <QThread>
 
 #include "okFrontPanel.h"
 #include "rhxcontroller.h"
