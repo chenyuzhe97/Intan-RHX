@@ -487,7 +487,6 @@ void MainWindow::onRecStop()
     if (!m_engine) return;
     m_engine->stopBinaryRecording();
 }
-
 void MainWindow::onABEpochReady(int phaseIndex,
                                 const QVector<uint32_t> &timeStamps,
                                 const QVector<QVector<int>> &channelData)
@@ -502,19 +501,25 @@ void MainWindow::onABEpochReady(int phaseIndex,
     appendLog(QString("%1: 收到一个 epoch，通道数=%2, 样本点数=%3")
                   .arg(phaseName).arg(numCh).arg(N));
 
-    if (!m_abAlgo) return;
-
-    // 1️⃣ 调算法 —— 现在返回的是 QVector<ABAlgorithm::Result>
-    QVector<ABAlgorithm::Result> results =
-        m_abAlgo->analyzeEpoch(phaseIndex, timeStamps, channelData);
-
-    if (results.isEmpty()) {
-        appendLog(QString("%1: 本 epoch 未检测到尖峰事件，未刺激").arg(phaseName));
+    if (!m_abAlgo) {
+        appendLog(QString("%1: m_abAlgo 为空，跳过分析").arg(phaseName));
+        return;
+    }
+    if (!m_engine) {
+        appendLog(QString("%1: m_engine 为空，无法刺激").arg(phaseName));
+        return;
+    }
+    if (timeStamps.isEmpty()) {
+        appendLog(QString("%1: timeStamps 为空，跳过本 epoch").arg(phaseName));
         return;
     }
 
-    if (!m_engine) {
-        appendLog(QString("%1: 检测到尖峰，但 m_engine 为空，无法刺激").arg(phaseName));
+    // 1️⃣ 调算法，拿到该 epoch 的所有事件
+    QVector<ABAlgorithm::Result> allResults =
+        m_abAlgo->analyzeEpoch(phaseIndex, timeStamps, channelData);
+
+    if (allResults.isEmpty()) {
+        appendLog(QString("%1: 本 epoch 未检测到尖峰事件").arg(phaseName));
         return;
     }
 
@@ -524,7 +529,7 @@ void MainWindow::onABEpochReady(int phaseIndex,
 
     if (phaseIndex == 0) {
         // PhaseA：看 A 端 → 刺激 B 端
-        targetElectrode = "B1";   // TODO: 以后做成可配置
+        targetElectrode = "B1";   // TODO: 可以改成 UI 配置
         triggerSource   = 1;      // 约定 trigger 1 刺激 B
     } else {
         // PhaseB：看 B 端 → 刺激 A 端
@@ -532,52 +537,96 @@ void MainWindow::onABEpochReady(int phaseIndex,
         triggerSource   = 0;      // 约定 trigger 0 刺激 A
     }
 
-    // 3️⃣ 按时间顺序逐个处理事件，但最多 10 个
+    const uint32_t epochStartTs = timeStamps.first();
+    const double   fs           = (m_sampleRate > 0.0 ? m_sampleRate : 30000.0);
+
+    // 3️⃣ 先筛出真正要刺激的事件（needStim = true 且 幅度>0）
+    QVector<ABAlgorithm::Result> candidates;
+    candidates.reserve(allResults.size());
+    for (const auto &r : allResults) {
+        if (!r.needStim) continue;
+        if (r.suggestedAmplitude_uA <= 0) continue;
+        candidates.append(r);
+    }
+
+    if (candidates.isEmpty()) {
+        appendLog(QString("%1: 本 epoch 检测到事件，但全部被判定为不需刺激").arg(phaseName));
+        return;
+    }
+
+    // 4️⃣ 从所有候选中，取“强度最大的 10 个”
+    //    这里强度用 spikeAmplitude_uV，也可以换成 suggestedAmplitude_uA
+    std::sort(candidates.begin(), candidates.end(),
+              [](const ABAlgorithm::Result &a,
+                 const ABAlgorithm::Result &b) {
+                  return a.spikeAmplitude_uV > b.spikeAmplitude_uV;
+              });
+
     const int maxStimPerEpoch = 10;
-    int stimCount = 0;
+    if (candidates.size() > maxStimPerEpoch) {
+        candidates.resize(maxStimPerEpoch);
+    }
 
-    for (int i = 0; i < results.size(); ++i) {
-        if (stimCount >= maxStimPerEpoch) {
-            appendLog(QString("%1: 本 epoch 检测到 %2 个事件，只对前 %3 个执行刺激，其余忽略")
-                          .arg(phaseName)
-                          .arg(results.size())
-                          .arg(maxStimPerEpoch));
-            break;
-        }
+    // 5️⃣ 再把这 10 个按 triggerTime 时间顺序排好
+    std::sort(candidates.begin(), candidates.end(),
+              [](const ABAlgorithm::Result &a,
+                 const ABAlgorithm::Result &b) {
+                  return a.triggerTime < b.triggerTime;
+              });
 
-        const auto &r = results[i];
-        if (!r.needStim || r.suggestedAmplitude_uA <= 0)
-            continue;
+    appendLog(QString("%1: 共检测到 %2 个候选事件，选出强度最大 %3 个，按时间顺序排队刺激")
+                  .arg(phaseName)
+                  .arg(allResults.size())
+                  .arg(candidates.size()));
+
+    // 6️⃣ 按时间顺序，为每个事件在「相对 epoch 起点」的时刻安排一次刺激
+    for (int i = 0; i < candidates.size(); ++i) {
+        const auto &r = candidates[i];
 
         int numPulses = (r.suggestedNumPulses > 0)
                             ? r.suggestedNumPulses
                             : 1;
 
+        // 计算相对本 epoch 起点的时间（秒 & 毫秒）
+        double offsetSec = 0.0;
+        if (r.triggerTime >= epochStartTs) {
+            offsetSec = double(r.triggerTime - epochStartTs) / fs;
+        }
+        int delayMs = int(offsetSec * 1000.0);
+        if (delayMs < 0) delayMs = 0;
+
         appendLog(QString(
-                      "%1: 事件 #%2 | t=%3 ms | ch=%4 | spike=%5 µV "
-                      "-> 刺激 %6, 幅度=%7 uA, 脉冲数=%8")
+                      "%1: 选中事件 #%2 | 相对 epoch t = %3 ms | ch=%4 | spike=%5 µV "
+                      "-> 计划在该相对时刻刺激 %6, 幅度=%7 uA, 脉冲数=%8")
                       .arg(phaseName)
                       .arg(i)
-                      .arg(r.triggerTime)
+                      .arg(offsetSec * 1000.0, 0, 'f', 2)
                       .arg(r.channelIndex)
                       .arg(r.spikeAmplitude_uV, 0, 'f', 1)
                       .arg(targetElectrode)
                       .arg(r.suggestedAmplitude_uA)
                       .arg(numPulses));
 
-        // 4️⃣ 调用原来的立即刺激接口
-        m_engine->applyAdaptiveStim(targetElectrode,
-                                    r.suggestedAmplitude_uA,
-                                    numPulses,
-                                    triggerSource);
-
-        ++stimCount;
-    }
-
-    if (stimCount == 0) {
-        appendLog(QString("%1: 本 epoch 虽检测到事件，但全部被判定为不需刺激").arg(phaseName));
+        // 在 delayMs 毫秒后调用 Engine 的自适应刺激接口：
+        // —— 相当于下一段 5s 里，在 0.1s / 0.5s / 1s ... 的时刻打刺激
+        QTimer::singleShot(
+            delayMs,
+            this,
+            [this,
+             targetElectrode,
+             triggerSource,
+             amp = r.suggestedAmplitude_uA,
+             numPulses]() {
+                if (!m_engine) return;
+                m_engine->applyAdaptiveStim(
+                    targetElectrode,
+                    amp,
+                    numPulses,
+                    triggerSource);
+            });
     }
 }
+
 
 
 void MainWindow::handleNewSamples(const QVector<uint32_t> &timeStamps,
