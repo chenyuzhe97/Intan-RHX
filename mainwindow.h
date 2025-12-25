@@ -10,6 +10,8 @@
 #include <QDoubleSpinBox>
 #include <QSplitter>
 #include <QTimer>
+#include <QCheckBox>
+#include <QComboBox>
 
 #include "acquisitionengine.h"
 #include "abalgorithm.h"
@@ -18,6 +20,7 @@
 #include "stackedwavewidget.h"
 #include "stimtimelineoverlay.h"
 #include "stimlogwriter.h"
+#include "fft_window.h"
 
 class MainWindow : public QMainWindow
 {
@@ -38,6 +41,10 @@ private slots:
     void onGainAChanged(double halfRangeUv);
     void onGainBChanged(double halfRangeUv);
 
+    // DSP/FFT
+    void applyDspSettings();
+    void onToggleFftWindows();
+
     void onABEpochReady(int phaseIndex,
                         const QVector<uint32_t> &timeStamps,
                         const QVector<QVector<int>> &channelData);
@@ -49,11 +56,13 @@ private:
     void setupUi();
     void appendLog(const QString &msg);
     void ensureTimelineVisible();
+    void ensureFftVisible();
 
 private:
     QWidget        *m_central = nullptr;
     QVBoxLayout    *m_layout  = nullptr;
 
+    // ===== buttons =====
     QPushButton    *m_btnOpen     = nullptr;
     QPushButton    *m_btnStart    = nullptr;
     QPushButton    *m_btnStop     = nullptr;
@@ -63,31 +72,51 @@ private:
 
     QDoubleSpinBox *m_spinEpochSec = nullptr;
 
-    // 显示缩放（每个 stream 一套）
+    // ===== view gain =====
     QDoubleSpinBox *m_spinGainA = nullptr;   // ±uV
     QDoubleSpinBox *m_spinGainB = nullptr;   // ±uV
 
+    // ===== DSP controls =====
+    QCheckBox *m_chkFilter = nullptr;
+    QComboBox *m_cmbFilterType = nullptr;   // Off/BandPass/LowPass/HighPass
+
+    QDoubleSpinBox *m_spBP1 = nullptr;      // band low
+    QDoubleSpinBox *m_spBP2 = nullptr;      // band high
+    QDoubleSpinBox *m_spLP  = nullptr;      // lowpass
+    QDoubleSpinBox *m_spHP  = nullptr;      // highpass
+
+    QCheckBox *m_chkNotch = nullptr;
+    QComboBox *m_cmbNotchHz = nullptr;      // 50/60
+    QDoubleSpinBox *m_spNotchQ = nullptr;
+
+    QPushButton *m_btnFFT = nullptr;
+    FftWindow *m_fftA = nullptr;
+    FftWindow *m_fftB = nullptr;
+
+    // ===== split view =====
     QSplitter      *m_split = nullptr;
     StackedWaveWidget *m_viewA = nullptr;    // Stream0
     StackedWaveWidget *m_viewB = nullptr;    // Stream2
 
     QPlainTextEdit *m_logView = nullptr;
 
+    // ===== core =====
     AcquisitionEngine      *m_engine     = nullptr;
     ABAlgorithm            *m_abAlgo     = nullptr;
     ExperimentControllerAB *m_experiment = nullptr;
 
-    // 刺激 timeline 悬浮窗 + CSV writer
+    // ===== stim timeline + csv =====
     StimTimelineOverlay *m_timeline = nullptr;
     StimLogWriter       *m_stimLog  = nullptr;
 
     int    m_epochCounter = 0;
 
-    // 参数
+    // ===== params =====
     double m_sampleRate = 30000.0;
     int    m_channelsPerStream = 16;
-    double m_visibleWindowSec = 2.0;
+    double m_visibleWindowSec = 2.0;   // 初始显示 2s（Ctrl+滚轮可变）
+    double m_maxWindowSec = 20.0;      // ring buffer 预留 20s
 
-    // 你原来变量名拼写是 colletion_time，我这里保留避免你其它代码引用崩掉
+    // 拼写保留
     double colletion_time = 5.0;
 };
