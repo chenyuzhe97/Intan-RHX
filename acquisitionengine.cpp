@@ -207,7 +207,8 @@ void AcquisitionEngine::processDataQueue()
 
         // 录制：建议这里用 writeBlockToRecording(block)（你现在 writeBlockStream() 逻辑其实不太对）
         if (m_isRecording) {
-            writeBlockToRecording(block);
+            writeBlockStream();
+            //writeBlockToRecording(block);
         }
 
         delete block;

@@ -144,7 +144,10 @@ SOURCES += main.cpp \
     controller.cpp \
     electrodeparameters.cpp \
     experimentcontrollerab.cpp \
-    mainwindow.cpp
+    mainwindow.cpp \
+    stackedwavewidget.cpp \
+    stimlogwriter.cpp \
+    stimtimelineoverlay.cpp
 
 
 HEADERS += \
@@ -270,7 +273,10 @@ HEADERS += \
     controller.h \
     electrodeparameters.h \
     experimentcontrollerab.h \
-    mainwindow.h
+    mainwindow.h \
+    stackedwavewidget.h \
+    stimlogwriter.h \
+    stimtimelineoverlay.h
 
 RESOURCES += \
     IntanRHX.qrc

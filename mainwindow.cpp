@@ -1,448 +1,205 @@
+// mainwindow.cpp
 #include "mainwindow.h"
+
 #include <QFileDialog>
 #include <QDateTime>
+#include <QDir>
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent),
-    colletion_time(5.0)
+    : QMainWindow(parent)
 {
-
     setupUi();
-    setupSinglePlot();
-    setupStream2Plot();
 
+    // 核心对象
     m_engine     = new AcquisitionEngine(this);
     m_experiment = new ExperimentControllerAB(m_engine, this);
     m_abAlgo     = new ABAlgorithm(this);
 
-    // ⭐ 告诉 AB 算法采样率（你整个系统现在就是 30000 Hz）
     if (m_abAlgo) {
         m_abAlgo->setSampleRateHz(m_sampleRate);
-        // 如果 m_sampleRate 没有对外暴露，就直接写死 30000.0 也行：
-        // m_abAlgo->setSampleRateHz(30000.0);
     }
 
-
+    // 高速波形显示：直接把数据喂给 widget（不要再走 QtCharts）
     connect(m_engine, &AcquisitionEngine::newSamples,
-            this,      &MainWindow::handleNewSamples);
+            m_viewA,   &StackedWaveWidget::pushBlock);
     connect(m_engine, &AcquisitionEngine::newSamplesStream2,
-            this,      &MainWindow::handleNewSamplesStream2);
+            m_viewB,   &StackedWaveWidget::pushBlock);
+
     connect(m_engine, &AcquisitionEngine::errorOccurred,
-            this,      &MainWindow::handleError);
+            this,     &MainWindow::handleError);
     connect(m_engine, &AcquisitionEngine::logMessage,
-            this,      &MainWindow::handleLog);
+            this,     &MainWindow::handleLog);
 
     connect(m_experiment, &ExperimentControllerAB::logMessage,
             this,         &MainWindow::handleLog);
 
-    // ⭐ 关键：把 AB 每个 epoch 的所有数据接到这里
+    // AB epoch 数据回调（用于计划刺激 + timeline + csv）
     connect(m_experiment, &ExperimentControllerAB::epochReady,
             this,         &MainWindow::onABEpochReady);
-}
 
+    // timeline + log writer
+    m_timeline = new StimTimelineOverlay();
+    m_timeline->show();
+
+    m_stimLog = new StimLogWriter(this);
+    // 默认先写到当前目录（开始录制时会切换到 recording.xxx.stim.csv）
+    m_stimLog->start(QDir::currentPath() + "/stim_log.csv");
+
+    // 初次定位 timeline 到窗口右侧
+    QTimer::singleShot(0, this, [this](){ ensureTimelineVisible(); });
+}
 
 MainWindow::~MainWindow()
 {
+    if (m_experiment) m_experiment->stop();
+    if (m_engine)     m_engine->stopAcquisition();
+    if (m_stimLog)    m_stimLog->stop();
+    if (m_timeline)   m_timeline->close();
 }
-
 
 void MainWindow::setupUi()
 {
     m_central = new QWidget(this);
     m_layout  = new QVBoxLayout(m_central);
 
-    // ===== 顶部按钮一行 =====
-    QHBoxLayout *buttonLayout = new QHBoxLayout();
-    m_btnOpen  = new QPushButton(tr("打开设备"), this);
-    m_btnStart = new QPushButton(tr("开始采集"), this);
-    m_btnStop  = new QPushButton(tr("停止采集"), this);
-    m_btnStim  = new QPushButton(tr("发一次刺激 (A1)"), this);
+    // ===== 顶部按钮行 =====
+    {
+        QHBoxLayout *row = new QHBoxLayout();
 
-    // ⭐ 新增两个按钮
-    m_btnRecStart = new QPushButton(tr("开始录制(bin)"), m_central);
-    m_btnRecStop  = new QPushButton(tr("停止录制"), m_central);
+        m_btnOpen     = new QPushButton(tr("打开设备"), this);
+        m_btnStart    = new QPushButton(tr("开始采集"), this);
+        m_btnStop     = new QPushButton(tr("停止采集"), this);
+        m_btnStimOnce = new QPushButton(tr("发一次刺激 (trigger=0)"), this);
+        m_btnRecStart = new QPushButton(tr("开始录制(bin)"), this);
+        m_btnRecStop  = new QPushButton(tr("停止录制"), this);
 
-    buttonLayout->addWidget(m_btnOpen);
-    buttonLayout->addWidget(m_btnStart);
-    buttonLayout->addWidget(m_btnStop);
-    buttonLayout->addWidget(m_btnStim);
-    buttonLayout->addWidget(m_btnRecStart);
-    buttonLayout->addWidget(m_btnRecStop);
-    // ===== Epoch 时长设置（秒）=====
-    buttonLayout->addWidget(new QLabel(tr("Epoch:"), this));
+        row->addWidget(m_btnOpen);
+        row->addWidget(m_btnStart);
+        row->addWidget(m_btnStop);
+        row->addWidget(m_btnStimOnce);
+        row->addWidget(m_btnRecStart);
+        row->addWidget(m_btnRecStop);
 
-    m_spinEpochSec = new QDoubleSpinBox(this);
-    m_spinEpochSec->setRange(0.1, 3600.0);   // 0.1s ~ 1小时，按需改
-    m_spinEpochSec->setDecimals(2);
-    m_spinEpochSec->setSingleStep(0.5);
-    m_spinEpochSec->setSuffix(" s");
-    m_spinEpochSec->setValue(colletion_time);
+        row->addSpacing(16);
 
-    buttonLayout->addWidget(m_spinEpochSec);
+        row->addWidget(new QLabel(tr("Epoch:"), this));
+        m_spinEpochSec = new QDoubleSpinBox(this);
+        m_spinEpochSec->setRange(0.1, 3600.0);
+        m_spinEpochSec->setDecimals(2);
+        m_spinEpochSec->setSingleStep(0.5);
+        m_spinEpochSec->setSuffix(" s");
+        m_spinEpochSec->setValue(colletion_time);
+        row->addWidget(m_spinEpochSec);
 
-    buttonLayout->addStretch(1);  // 右边空出来一点
-
-    m_layout->addLayout(buttonLayout);
-
-    // ===== Stream0 单通道：通道选择 + 图，占位 =====
-    // 通道下拉框（stream0）
-    QHBoxLayout *chLayout0 = new QHBoxLayout();
-    QLabel *label0 = new QLabel(tr("Stream 0 通道："), this);
-    m_comboChannel = new QComboBox(this);
-    for (int ch = 0; ch < NUM_CHANNELS; ++ch) {
-        m_comboChannel->addItem(QString("CH%1").arg(ch), ch);
+        row->addStretch(1);
+        m_layout->addLayout(row);
     }
-    chLayout0->addWidget(label0);
-    chLayout0->addWidget(m_comboChannel);
-    chLayout0->addStretch(1);
-    m_layout->addLayout(chLayout0);
 
-    // ⭐⭐ 新增：单通道 Y 轴范围控制
-    QHBoxLayout *yCtrlLayout = new QHBoxLayout();
-    m_chkAutoY = new QCheckBox(tr("Y 轴自适应"), this);
-    m_chkAutoY->setChecked(true);   // 默认自适应
+    // ===== 显示范围控制行（不做复杂滤波，保持显示快）=====
+    {
+        QHBoxLayout *row = new QHBoxLayout();
 
-    m_spinYMin = new QDoubleSpinBox(this);
-    m_spinYMax = new QDoubleSpinBox(this);
+        row->addWidget(new QLabel(tr("Stream0 显示范围(±uV):"), this));
+        m_spinGainA = new QDoubleSpinBox(this);
+        m_spinGainA->setRange(10.0, 200000.0);
+        m_spinGainA->setDecimals(0);
+        m_spinGainA->setSingleStep(100.0);
+        m_spinGainA->setValue(500.0);
+        m_spinGainA->setSuffix(" µV");
+        row->addWidget(m_spinGainA);
 
-    m_spinYMin->setRange(-1e6, 1e6);
-    m_spinYMax->setRange(-1e6, 1e6);
-    m_spinYMin->setDecimals(1);
-    m_spinYMax->setDecimals(1);
-    m_spinYMin->setValue(m_fixedYMin);
-    m_spinYMax->setValue(m_fixedYMax);
-    m_spinYMin->setSuffix(" µV");
-    m_spinYMax->setSuffix(" µV");
+        row->addSpacing(20);
 
-    // 初始时因为是“自适应”，禁用两个 spinBox
-    m_spinYMin->setEnabled(false);
-    m_spinYMax->setEnabled(false);
+        row->addWidget(new QLabel(tr("Stream2 显示范围(±uV):"), this));
+        m_spinGainB = new QDoubleSpinBox(this);
+        m_spinGainB->setRange(10.0, 200000.0);
+        m_spinGainB->setDecimals(0);
+        m_spinGainB->setSingleStep(100.0);
+        m_spinGainB->setValue(500.0);
+        m_spinGainB->setSuffix(" µV");
+        row->addWidget(m_spinGainB);
 
-    yCtrlLayout->addWidget(m_chkAutoY);
-    yCtrlLayout->addWidget(new QLabel(tr("Ymin:"), this));
-    yCtrlLayout->addWidget(m_spinYMin);
-    yCtrlLayout->addWidget(new QLabel(tr("Ymax:"), this));
-    yCtrlLayout->addWidget(m_spinYMax);
-    yCtrlLayout->addStretch(1);
-
-    m_layout->addLayout(yCtrlLayout);
-
-    // 通道2未添加
-
-    // ⭐⭐⭐ 这里加一行带通滤波控件
-    QHBoxLayout *bpLayout = new QHBoxLayout();
-    m_chkBandpass = new QCheckBox(tr("带通滤波"), this);
-    m_spinBpLow   = new QDoubleSpinBox(this);
-    m_spinBpHigh  = new QDoubleSpinBox(this);
-
-    // 低截止频率
-    m_spinBpLow->setRange(1.0, 10000.0);
-    m_spinBpLow->setDecimals(1);
-    m_spinBpLow->setValue(300.0);
-    m_spinBpLow->setSuffix(" Hz");
-
-    // 高截止频率
-    m_spinBpHigh->setRange(10.0, 15000.0);
-    m_spinBpHigh->setDecimals(1);
-    m_spinBpHigh->setValue(3000.0);
-    m_spinBpHigh->setSuffix(" Hz");
-
-    bpLayout->addWidget(m_chkBandpass);
-    bpLayout->addWidget(new QLabel(tr("低截止"), this));
-    bpLayout->addWidget(m_spinBpLow);
-    bpLayout->addWidget(new QLabel(tr("高截止"), this));
-    bpLayout->addWidget(m_spinBpHigh);
-    bpLayout->addStretch(1);
-
-    m_layout->addLayout(bpLayout);
-    // ⭐⭐⭐ 到这里为止，是 Stream0 的滤波控制 UI
-
-    // 图本身在 setupSinglePlot() 里插入
-
-    // ===== Stream2 单通道：通道选择 + 图，占位 =====
-    // 通道下拉框（stream2）
-    // ===== Stream2 单通道：通道选择 =====
-    QHBoxLayout *chLayout2 = new QHBoxLayout();
-    QLabel *label2 = new QLabel(tr("Stream 2 通道："), this);
-    m_comboStream2Ch = new QComboBox(this);
-    for (int ch = 0; ch < NUM_CH_STREAM2; ++ch) {
-        m_comboStream2Ch->addItem(QString("CH%1").arg(ch), ch);
+        row->addStretch(1);
+        m_layout->addLayout(row);
     }
-    chLayout2->addWidget(label2);
-    chLayout2->addWidget(m_comboStream2Ch);
-    chLayout2->addStretch(1);
-    m_layout->addLayout(chLayout2);
 
-    // ⭐⭐ Stream2 Y 轴范围控制
-    QHBoxLayout *y2Layout = new QHBoxLayout();
-    m_chkAutoY2 = new QCheckBox(tr("Y 轴自适应 (Stream2)"), this);
-    m_chkAutoY2->setChecked(true);
+    // ===== 左右分屏：Stream0 / Stream2 多通道显示 =====
+    m_split = new QSplitter(Qt::Horizontal, this);
 
-    m_spinY2Min = new QDoubleSpinBox(this);
-    m_spinY2Max = new QDoubleSpinBox(this);
-    m_spinY2Min->setRange(-1e6, 1e6);
-    m_spinY2Max->setRange(-1e6, 1e6);
-    m_spinY2Min->setDecimals(1);
-    m_spinY2Max->setDecimals(1);
-    m_spinY2Min->setValue(m_fixedY2Min);
-    m_spinY2Max->setValue(m_fixedY2Max);
-    m_spinY2Min->setSuffix(" µV");
-    m_spinY2Max->setSuffix(" µV");
-    m_spinY2Min->setEnabled(false);
-    m_spinY2Max->setEnabled(false);
+    m_viewA = new StackedWaveWidget(this);
+    m_viewB = new StackedWaveWidget(this);
 
-    y2Layout->addWidget(m_chkAutoY2);
-    y2Layout->addWidget(new QLabel(tr("Ymin:"), this));
-    y2Layout->addWidget(m_spinY2Min);
-    y2Layout->addWidget(new QLabel(tr("Ymax:"), this));
-    y2Layout->addWidget(m_spinY2Max);
-    y2Layout->addStretch(1);
-    m_layout->addLayout(y2Layout);
+    m_viewA->configure(m_channelsPerStream, m_sampleRate, m_visibleWindowSec);
+    m_viewB->configure(m_channelsPerStream, m_sampleRate, m_visibleWindowSec);
 
-    // ⭐⭐ Stream2 带通滤波控件
-    QHBoxLayout *bp2Layout = new QHBoxLayout();
-    m_chkBandpass2 = new QCheckBox(tr("带通滤波 (Stream2)"), this);
-    m_spinBp2Low   = new QDoubleSpinBox(this);
-    m_spinBp2High  = new QDoubleSpinBox(this);
+    m_viewA->setTitle("Stream0 (A) - 16ch");
+    m_viewB->setTitle("Stream2 (B) - 16ch");
 
-    m_spinBp2Low->setRange(1.0, 10000.0);
-    m_spinBp2Low->setDecimals(1);
-    m_spinBp2Low->setValue(m_bp2LowHz);
-    m_spinBp2Low->setSuffix(" Hz");
+    m_viewA->setGainUv(m_spinGainA->value());
+    m_viewB->setGainUv(m_spinGainB->value());
 
-    m_spinBp2High->setRange(10.0, 15000.0);
-    m_spinBp2High->setDecimals(1);
-    m_spinBp2High->setValue(m_bp2HighHz);
-    m_spinBp2High->setSuffix(" Hz");
+    m_split->addWidget(m_viewA);
+    m_split->addWidget(m_viewB);
+    m_split->setStretchFactor(0, 1);
+    m_split->setStretchFactor(1, 1);
 
-    bp2Layout->addWidget(m_chkBandpass2);
-    bp2Layout->addWidget(new QLabel(tr("低截止"), this));
-    bp2Layout->addWidget(m_spinBp2Low);
-    bp2Layout->addWidget(new QLabel(tr("高截止"), this));
-    bp2Layout->addWidget(m_spinBp2High);
-    bp2Layout->addStretch(1);
-    m_layout->addLayout(bp2Layout);
+    m_layout->addWidget(m_split, 3);
 
-
-    // 图本身在 setupStream2Plot() 里插入
-
-    // ===== 底部日志框 =====
-    m_logView  = new QPlainTextEdit(this);
+    // ===== 底部日志 =====
+    m_logView = new QPlainTextEdit(this);
     m_logView->setReadOnly(true);
     m_layout->addWidget(m_logView, 1);
 
     setCentralWidget(m_central);
 
-    // ===== 按钮信号槽 =====
-    connect(m_btnOpen,  &QPushButton::clicked,
-            this,       &MainWindow::onOpenDevice);
-    connect(m_btnStart, &QPushButton::clicked,
-            this,       &MainWindow::onStart);
-    connect(m_btnStop,  &QPushButton::clicked,
-            this,       &MainWindow::onStop);
-    connect(m_btnStim,  &QPushButton::clicked,
-            this,       &MainWindow::onStimOnce);
-    connect(m_btnRecStart, &QPushButton::clicked,
-            this,          &MainWindow::onRecStart);
-    connect(m_btnRecStop,  &QPushButton::clicked,
-            this,          &MainWindow::onRecStop);
+    // ===== 信号槽 =====
+    connect(m_btnOpen,     &QPushButton::clicked, this, &MainWindow::onOpenDevice);
+    connect(m_btnStart,    &QPushButton::clicked, this, &MainWindow::onStart);
+    connect(m_btnStop,     &QPushButton::clicked, this, &MainWindow::onStop);
+    connect(m_btnStimOnce, &QPushButton::clicked, this, &MainWindow::onStimOnce);
+    connect(m_btnRecStart, &QPushButton::clicked, this, &MainWindow::onRecStart);
+    connect(m_btnRecStop,  &QPushButton::clicked, this, &MainWindow::onRecStop);
 
     connect(m_spinEpochSec,
             QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this,
             &MainWindow::onEpochDurationChanged);
 
-
-    // ===== 单通道（Stream0）通道选择 =====
-    connect(m_comboChannel,
-            QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this,
-            &MainWindow::onChannelChanged);
-
-    // ⭐ Y 轴自动/固定切换 + 范围修改
-    connect(m_chkAutoY, &QCheckBox::toggled,
-            this,        &MainWindow::onAutoYChanged);
-
-    connect(m_spinYMin,
+    connect(m_spinGainA,
             QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this,
-            &MainWindow::onYRangeEdited);
+            &MainWindow::onGainAChanged);
 
-    connect(m_spinYMax,
+    connect(m_spinGainB,
             QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this,
-            &MainWindow::onYRangeEdited);
-
-    // ===== 带通滤波勾选 & 参数变化 =====
-    connect(m_chkBandpass, &QCheckBox::toggled,
-            this,          &MainWindow::onBandpassToggled);
-    connect(m_spinBpLow,
-            QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this,
-            &MainWindow::onBandpassParamChanged);
-    connect(m_spinBpHigh,
-            QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this,
-            &MainWindow::onBandpassParamChanged);
-
-    // ===== Stream2 通道选择 =====
-    connect(m_comboStream2Ch,
-            QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this,
-            [this](int index) {
-                m_currentChStream2 = m_comboStream2Ch->itemData(index).toInt();
-                appendLog(QString("切换 Stream2 显示到 CH%1").arg(m_currentChStream2));
-                m_bufferStream2.clear();
-                if (m_seriesStream2) m_seriesStream2->clear();
-            });
-
-    // Stream2 Y 轴
-    connect(m_chkAutoY2, &QCheckBox::toggled,
-            this,        &MainWindow::onAutoY2Changed);
-    connect(m_spinY2Min,
-            QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this,
-            &MainWindow::onY2RangeEdited);
-    connect(m_spinY2Max,
-            QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this,
-            &MainWindow::onY2RangeEdited);
-
-    // Stream2 带通
-    connect(m_chkBandpass2, &QCheckBox::toggled,
-            this,           &MainWindow::onBandpass2Toggled);
-    connect(m_spinBp2Low,
-            QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this,
-            &MainWindow::onBandpass2ParamChanged);
-    connect(m_spinBp2High,
-            QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this,
-            &MainWindow::onBandpass2ParamChanged);
-
+            &MainWindow::onGainBChanged);
 }
-
-void MainWindow::setupSinglePlot()
-{
-    m_series = new QLineSeries(this);
-    m_chart  = new QChart();
-    m_chart->addSeries(m_series);
-    m_chart->legend()->hide();
-    m_chart->setTitle(tr("Stream 0 单通道实时波形"));
-
-    m_axisX = new QValueAxis(this);
-    m_axisX->setTitleText("Time (s)");
-    m_axisX->setRange(0.0, m_visibleWindowSec);
-
-    m_axisY = new QValueAxis(this);
-    m_axisY->setTitleText("Voltage (µV)");   // ⭐ 改成和 stream2 一致
-    m_axisY->setRange(-100.0, 100.0);
-
-    m_chart->addAxis(m_axisX, Qt::AlignBottom);
-    m_chart->addAxis(m_axisY, Qt::AlignLeft);
-    m_series->attachAxis(m_axisX);
-    m_series->attachAxis(m_axisY);
-
-    m_chartView = new QChartView(m_chart, this);
-    m_chartView->setRenderHint(QPainter::Antialiasing);
-
-    // 按钮行 + Stream0 通道选择布局之后，索引大概是 1 或 2；
-    // 我们把单通道图插在“Stream0 通道选择”后面：
-    int insertIndex = 2; // 0: 按钮行, 1: Stream0 通道布局, 2: 这里
-    m_layout->insertWidget(insertIndex, m_chartView, 2);
-}
-void MainWindow::setupStream2Plot()
-{
-    m_chartStream2 = new QChart();
-    m_chartStream2->legend()->hide();
-    m_chartStream2->setTitle(tr("Stream 2 单通道实时波形"));
-
-    m_axisX2 = new QValueAxis(this);
-    m_axisX2->setTitleText("Time (s)");
-    m_axisX2->setRange(0.0, m_stream2WindowSec);
-
-    m_axisY2 = new QValueAxis(this);
-    m_axisY2->setTitleText("Voltage (µV)");  // ⭐ 和上面统一
-    m_axisY2->setRange(-200.0, 200.0);
-
-    m_chartStream2->addAxis(m_axisX2, Qt::AlignBottom);
-    m_chartStream2->addAxis(m_axisY2, Qt::AlignLeft);
-
-    m_seriesStream2 = new QLineSeries(this);
-    m_chartStream2->addSeries(m_seriesStream2);
-    m_seriesStream2->attachAxis(m_axisX2);
-    m_seriesStream2->attachAxis(m_axisY2);
-
-    m_chartViewStream2 = new QChartView(m_chartStream2, this);
-    m_chartViewStream2->setRenderHint(QPainter::Antialiasing);
-
-    // 插在 “Stream2 通道选择布局” 后面
-    // layout 顺序：0 按钮行，1 Stream0通道布局，2 Stream0图，3 Stream2通道布局，4 待插 Stream2图，5 日志
-    int logIndex = m_layout->indexOf(m_logView);
-    int insertIndex = (logIndex > 0) ? logIndex : m_layout->count();
-    // 日志在最后一个，所以 Stream2 曲线插在日志前面
-    m_layout->insertWidget(insertIndex, m_chartViewStream2, 2);
-}
-
-
-void MainWindow::setupMultiPlot()
-{
-    m_multiChart = new QChart();
-    m_multiChart->legend()->hide();
-
-    m_multiAxisX = new QValueAxis(this);
-    m_multiAxisX->setTitleText("Time (s)");
-    m_multiAxisX->setRange(0.0, m_multiWindowSec);
-
-    m_multiAxisY = new QValueAxis(this);
-    m_multiAxisY->setTitleText("Channel stack");
-    // 先给一个大概的范围，后面会根据通道数自动调整
-    m_multiAxisY->setRange(-200.0, NUM_CHANNELS * 400.0);
-
-    m_multiChart->addAxis(m_multiAxisX, Qt::AlignBottom);
-    m_multiChart->addAxis(m_multiAxisY, Qt::AlignLeft);
-
-    // 准备多通道 series & buffer
-    m_multiSeries.resize(NUM_CHANNELS);
-    m_multiBuffers.resize(NUM_CHANNELS);
-
-    for (int ch = 0; ch < NUM_CHANNELS; ++ch) {
-        auto *series = new QLineSeries(this);
-        series->setName(QString("CH%1").arg(ch));
-        m_multiChart->addSeries(series);
-        series->attachAxis(m_multiAxisX);
-        series->attachAxis(m_multiAxisY);
-        m_multiSeries[ch] = series;
-    }
-
-    m_multiChartView = new QChartView(m_multiChart, this);
-    m_multiChartView->setRenderHint(QPainter::Antialiasing);
-
-    // 放在 log 之前
-    // 当前 layout 顺序：按钮…（0,1,2）+ 单通道图(3) + 通道layout(4) + log(5)
-    // 想要多通道图在 log 上面，可以 insert 在 log 前一位
-    int logIndex = m_layout->indexOf(m_logView);
-    if (logIndex < 0) logIndex = m_layout->count();
-    m_layout->insertWidget(logIndex, m_multiChartView, 2);
-}
-
-
 
 void MainWindow::appendLog(const QString &msg)
 {
-    QString line = QDateTime::currentDateTime()
+    const QString line = QDateTime::currentDateTime()
     .toString("hh:mm:ss.zzz  ") + msg;
     m_logView->appendPlainText(line);
 }
 
+void MainWindow::ensureTimelineVisible()
+{
+    if (!m_timeline) return;
+    // 放到主窗口右侧一点
+    const QRect g = this->geometry();
+    m_timeline->move(g.topRight() + QPoint(20, 40));
+    m_timeline->raise();
+}
+
 void MainWindow::onOpenDevice()
 {
-    // 你可以写死 bitfile 路径，也可以弹框选择
     QString path = QFileDialog::getOpenFileName(
         this,
         tr("选择 ConfigRHSController_7310.bit"),
         QString(),
         tr("Bitfile (*.bit);;All Files (*.*)"));
+
     if (path.isEmpty()) return;
 
     if (!m_engine->openDevice(path)) {
@@ -456,34 +213,24 @@ void MainWindow::onStart()
 {
     if (!m_engine) return;
 
-    // 1）配置好你要的刺激波形（如果暂时只想先看数据，可以先注释掉）
-    /*
-    m_engine->configureStim("A1", 100, 100, 500, 500, 500, 1, 0); // trigger 0 给 A
-    m_engine->configureStim("B1", 100, 100, 500, 500, 500, 1, 1); // trigger 1 给 B
-    */
-
-    // 2）启动连续采集
+    // 1) 启动连续采集
     m_engine->startContinuousAcquisition();
 
-    // 3）启动 AB epoch 控制器（比如 5s）
+    // 2) 启动 AB epoch 控制器
     if (m_experiment) {
         m_experiment->setEpochDuration(colletion_time);
         m_experiment->start();
     }
 
-    appendLog(QString("开始采集 + AB %1s epoch 采集")
-                  .arg(colletion_time, 0, 'f', 2));
+    ensureTimelineVisible();
 
+    appendLog(QString("开始采集 + AB epoch=%1 s").arg(colletion_time, 0, 'f', 2));
 }
 
 void MainWindow::onStop()
 {
-    if (m_experiment) {
-        m_experiment->stop();
-    }
-    if (m_engine) {
-        m_engine->stopAcquisition();
-    }
+    if (m_experiment) m_experiment->stop();
+    if (m_engine)     m_engine->stopAcquisition();
     appendLog("已停止采集");
 }
 
@@ -495,12 +242,20 @@ void MainWindow::onRecStart()
         this,
         tr("选择录制文件保存路径"),
         QDir::currentPath() + "/recording.bar",
-        tr("Binary Recording (*.bar);;All Files (*.*)")
-        );
+        tr("Binary Recording (*.bar);;All Files (*.*)"));
+
     if (file.isEmpty()) return;
 
     if (m_engine->startBinaryRecording(file)) {
         appendLog("开始录制到文件：" + file);
+
+        // 刺激日志写到同名 csv
+        if (m_stimLog) {
+            m_stimLog->start(file + ".stim.csv");
+            appendLog("Stim log 写入：" + file + ".stim.csv");
+        }
+    } else {
+        appendLog("开始录制失败");
     }
 }
 
@@ -508,300 +263,180 @@ void MainWindow::onRecStop()
 {
     if (!m_engine) return;
     m_engine->stopBinaryRecording();
+    appendLog("已停止录制");
+
+    if (m_stimLog) {
+        m_stimLog->stop();
+        // 也可以选择继续写到默认 stim_log.csv，这里按“录制结束就停止写文件”
+        m_stimLog->start(QDir::currentPath() + "/stim_log.csv");
+        appendLog("Stim log 切回默认：stim_log.csv");
+    }
+}
+
+void MainWindow::onStimOnce()
+{
+    if (!m_engine) return;
+    int triggerSource = 0;
+    m_engine->triggerStim(triggerSource, true);
+    appendLog("已触发刺激：trigger=0（使用当前已配置波形）");
+}
+
+void MainWindow::onEpochDurationChanged(double sec)
+{
+    colletion_time = sec;
+
+    if (m_experiment) {
+        m_experiment->setEpochDuration(colletion_time);
+    }
+
+    appendLog(QString("Epoch 时长设置为 %1 s").arg(colletion_time, 0, 'f', 2));
+}
+
+void MainWindow::onGainAChanged(double halfRangeUv)
+{
+    if (m_viewA) m_viewA->setGainUv(halfRangeUv);
+}
+
+void MainWindow::onGainBChanged(double halfRangeUv)
+{
+    if (m_viewB) m_viewB->setGainUv(halfRangeUv);
 }
 
 void MainWindow::onABEpochReady(int phaseIndex,
                                 const QVector<uint32_t> &timeStamps,
                                 const QVector<QVector<int>> &channelData)
 {
-    int numCh = channelData.size();
-    int N     = timeStamps.size();
+    const QString phaseName = (phaseIndex == 0)
+    ? "PhaseA (A端 stream0)"
+    : "PhaseB (B端 stream2)";
 
-    QString phaseName = (phaseIndex == 0)
-                            ? "PhaseA (A 端 stream0)"
-                            : "PhaseB (B 端 stream2)";
-
-    appendLog(QString("%1: 收到一个 epoch，通道数=%2, 样本点数=%3")
-                  .arg(phaseName).arg(numCh).arg(N));
-
-    if (!m_abAlgo) {
-        appendLog(QString("%1: m_abAlgo 为空，跳过分析").arg(phaseName));
+    if (!m_abAlgo || !m_engine) {
+        appendLog(phaseName + ": m_abAlgo 或 m_engine 为空，跳过");
         return;
     }
-    if (!m_engine) {
-        appendLog(QString("%1: m_engine 为空，无法刺激").arg(phaseName));
-        return;
-    }
-    if (timeStamps.isEmpty()) {
-        appendLog(QString("%1: timeStamps 为空，跳过本 epoch").arg(phaseName));
+    if (timeStamps.isEmpty() || channelData.isEmpty()) {
+        appendLog(phaseName + ": epoch 数据为空，跳过");
         return;
     }
 
-    // 1️⃣ 调算法，拿到该 epoch 的所有事件
-    QVector<ABAlgorithm::Result> allResults =
+    // 1) 算法分析
+    const QVector<ABAlgorithm::Result> allResults =
         m_abAlgo->analyzeEpoch(phaseIndex, timeStamps, channelData);
 
     if (allResults.isEmpty()) {
-        appendLog(QString("%1: 本 epoch 未检测到尖峰事件").arg(phaseName));
+        appendLog(phaseName + ": 本 epoch 未检测到尖峰事件");
         return;
     }
 
-    // 2️⃣ 根据 phase 决定刺激目标和 trigger
+    // 2) phase 决定刺激目标与 trigger
     QString targetElectrode;
     int triggerSource = 0;
 
     if (phaseIndex == 0) {
-        // PhaseA：看 A 端 → 刺激 B 端
-        targetElectrode = "B1";   // TODO: 可以改成 UI 配置
-        triggerSource   = 1;      // 约定 trigger 1 刺激 B
+        targetElectrode = "B1";   // A 看 → 刺激 B
+        triggerSource   = 1;
     } else {
-        // PhaseB：看 B 端 → 刺激 A 端
-        targetElectrode = "A1";
-        triggerSource   = 0;      // 约定 trigger 0 刺激 A
+        targetElectrode = "A1";   // B 看 → 刺激 A
+        triggerSource   = 0;
     }
 
     const uint32_t epochStartTs = timeStamps.first();
-    const double   fs           = (m_sampleRate > 0.0 ? m_sampleRate : 30000.0);
+    const double fs = (m_sampleRate > 0.0 ? m_sampleRate : 30000.0);
 
-    // 3️⃣ 先筛出真正要刺激的事件（needStim = true 且 幅度>0）
+    // 3) 筛候选（needStim & amp>0）
     QVector<ABAlgorithm::Result> candidates;
     candidates.reserve(allResults.size());
     for (const auto &r : allResults) {
         if (!r.needStim) continue;
         if (r.suggestedAmplitude_uA <= 0) continue;
-        candidates.append(r);
+        candidates.push_back(r);
     }
 
     if (candidates.isEmpty()) {
-        appendLog(QString("%1: 本 epoch 检测到事件，但全部被判定为不需刺激").arg(phaseName));
+        appendLog(phaseName + ": 检测到事件，但全部判定不需刺激");
         return;
     }
 
-    // 4️⃣ 从所有候选中，取“强度最大的 10 个”
-    //    这里强度用 spikeAmplitude_uV，也可以换成 suggestedAmplitude_uA
+    // 4) 取“强度最大 10 个”
     std::sort(candidates.begin(), candidates.end(),
-              [](const ABAlgorithm::Result &a,
-                 const ABAlgorithm::Result &b) {
+              [](const ABAlgorithm::Result &a, const ABAlgorithm::Result &b) {
                   return a.spikeAmplitude_uV > b.spikeAmplitude_uV;
               });
 
     const int maxStimPerEpoch = 10;
-    if (candidates.size() > maxStimPerEpoch) {
-        candidates.resize(maxStimPerEpoch);
-    }
+    if (candidates.size() > maxStimPerEpoch) candidates.resize(maxStimPerEpoch);
 
-    // 5️⃣ 再把这 10 个按 triggerTime 时间顺序排好
+    // 5) 再按时间顺序
     std::sort(candidates.begin(), candidates.end(),
-              [](const ABAlgorithm::Result &a,
-                 const ABAlgorithm::Result &b) {
+              [](const ABAlgorithm::Result &a, const ABAlgorithm::Result &b) {
                   return a.triggerTime < b.triggerTime;
               });
 
-    appendLog(QString("%1: 共检测到 %2 个候选事件，选出强度最大 %3 个，按时间顺序排队刺激")
+    const int epochId = ++m_epochCounter;
+
+    appendLog(QString("%1: 检测=%2，候选=%3，计划刺激=%4（epochId=%5）")
                   .arg(phaseName)
                   .arg(allResults.size())
-                  .arg(candidates.size()));
+                  .arg(candidates.size())
+                  .arg(candidates.size())
+                  .arg(epochId));
 
-    // 6️⃣ 按时间顺序，为每个事件在「相对 epoch 起点」的时刻安排一次刺激
+    // 6) 更新 timeline 计划 + 写 planned 日志 + 调度 singleShot
+    QVector<StimTimelineOverlay::Item> items;
+    items.reserve(candidates.size());
+
     for (int i = 0; i < candidates.size(); ++i) {
-        const auto &r = candidates[i];
+        const auto r = candidates[i]; // 复制一份，避免 lambda 引用悬空
 
-        int numPulses = (r.suggestedNumPulses > 0)
-                            ? r.suggestedNumPulses
-                            : 1;
+        int numPulses = (r.suggestedNumPulses > 0) ? r.suggestedNumPulses : 1;
 
-        // 计算相对本 epoch 起点的时间（秒 & 毫秒）
         double offsetSec = 0.0;
         if (r.triggerTime >= epochStartTs) {
             offsetSec = double(r.triggerTime - epochStartTs) / fs;
         }
-        int delayMs = int(offsetSec * 1000.0);
+        const double offsetMsD = offsetSec * 1000.0;
+        int delayMs = int(offsetMsD);
         if (delayMs < 0) delayMs = 0;
 
-        appendLog(QString(
-                      "%1: 选中事件 #%2 | 相对 epoch t = %3 ms | ch=%4 | spike=%5 µV "
-                      "-> 计划在该相对时刻刺激 %6, 幅度=%7 uA, 脉冲数=%8")
-                      .arg(phaseName)
-                      .arg(i)
-                      .arg(offsetSec * 1000.0, 0, 'f', 2)
-                      .arg(r.channelIndex)
-                      .arg(r.spikeAmplitude_uV, 0, 'f', 1)
-                      .arg(targetElectrode)
-                      .arg(r.suggestedAmplitude_uA)
-                      .arg(numPulses));
+        StimTimelineOverlay::Item it;
+        it.itemIndex = i;
+        it.offsetMs = offsetMsD;
+        it.amp_uA = r.suggestedAmplitude_uA;
+        it.pulses = numPulses;
+        it.ch = r.channelIndex;
+        it.spike_uV = r.spikeAmplitude_uV;
+        it.electrode = targetElectrode;
+        it.fired = false;
+        items.push_back(it);
 
-        // 在 delayMs 毫秒后调用 Engine 的自适应刺激接口：
-        // —— 相当于下一段 5s 里，在 0.1s / 0.5s / 1s ... 的时刻打刺激
-        QTimer::singleShot(
-            delayMs,
-            this,
-            [this,
-             targetElectrode,
-             triggerSource,
-             amp = r.suggestedAmplitude_uA,
-             numPulses]() {
-                if (!m_engine) return;
-                m_engine->applyAdaptiveStim(
-                    targetElectrode,
-                    amp,
-                    numPulses,
-                    triggerSource);
-            });
+        if (m_stimLog) {
+            m_stimLog->logPlanned(epochId, phaseIndex, i,
+                                  offsetMsD,
+                                  targetElectrode,
+                                  it.amp_uA, it.pulses,
+                                  it.ch, it.spike_uV);
+        }
+
+        // 安排在本 epoch 内相对时刻触发
+        QTimer::singleShot(delayMs, this,
+                           [this, epochId, phaseIndex, itemIdx=i,
+                            targetElectrode, triggerSource,
+                            amp=it.amp_uA, pulses=it.pulses]() {
+
+                               if (m_timeline) m_timeline->markFired(epochId, itemIdx);
+                               if (m_stimLog)  m_stimLog->logFired(epochId, phaseIndex, itemIdx,
+                                                       targetElectrode, amp, pulses);
+
+                               if (!m_engine) return;
+                               m_engine->applyAdaptiveStim(targetElectrode, amp, pulses, triggerSource);
+                           });
+    }
+
+    if (m_timeline) {
+        m_timeline->setEpochPlan(epochId, phaseIndex, colletion_time, items);
+        ensureTimelineVisible();
     }
 }
-
-
-
-void MainWindow::handleNewSamples(const QVector<uint32_t> &timeStamps,
-                                  const QVector<QVector<int>> &channelData)
-{
-    if (channelData.isEmpty()) return;
-    if (timeStamps.isEmpty()) return;
-
-    int numCh = channelData.size();
-    int N     = timeStamps.size();
-    if (N <= 0) return;
-
-    int chSel = qBound(0, m_currentChannel, numCh - 1);
-    const QVector<int> &chData = channelData[chSel];
-    int Nsingle = qMin(N, chData.size());
-    if (Nsingle <= 0) return;
-
-    // 1) 整段转成 µV
-    QVector<double> uVfull(Nsingle);
-    for (int i = 0; i < Nsingle; ++i) {
-        uVfull[i] = (double(chData[i]) - 32768.0) * 0.195;
-    }
-
-    // 2) 如果勾选了带通滤波，就先滤波
-    QVector<double> y;
-    if (m_enableBandpass && m_abAlgo) {
-        m_abAlgo->setSampleRateHz(m_sampleRate);     // 或者 30000.0
-        y = m_abAlgo->bandPassFilter(uVfull, m_bpLowHz, m_bpHighHz);
-
-        if (y.size() != Nsingle) {
-            y = uVfull;
-        }
-    } else {
-        y = uVfull;
-    }
-
-    const int decim = 30;  // 和你原来一样的下采样比
-
-    for (int i = 0; i < Nsingle; i += decim) {
-        uint32_t ts = timeStamps[i];
-        double tSec = double(ts) / m_sampleRate;
-        double val  = y[i];
-
-        m_buffer.append(QPointF(tSec, val));
-    }
-
-    if (m_buffer.isEmpty()) return;
-
-    // ====== 真正只保留“最近 2 秒”的数据 ======
-    double tMax = m_buffer.last().x();
-    double tMin = tMax - m_visibleWindowSec;
-    if (tMin < 0.0) tMin = 0.0;
-
-    while (!m_buffer.isEmpty() && m_buffer.first().x() < tMin) {
-        m_buffer.removeFirst();
-    }
-
-    // ⭐⭐ 别忘了：用 buffer 更新曲线
-    m_series->replace(m_buffer);
-
-    // Y 轴范围：自适应 或 固定
-    if (m_autoY) {
-        double yMin = m_buffer.first().y();
-        double yMax = yMin;
-        for (const auto &p : m_buffer) {
-            if (p.y() < yMin) yMin = p.y();
-            if (p.y() > yMax) yMax = p.y();
-        }
-        double margin = 0.1 * (yMax - yMin + 1e-9);
-        m_axisY->setRange(yMin - margin, yMax + margin);
-    } else {
-        m_axisY->setRange(m_fixedYMin, m_fixedYMax);
-    }
-
-    // X 轴固定滑动窗口
-    m_axisX->setRange(tMin, tMax);
-}
-
-void MainWindow::handleNewSamplesStream2(const QVector<uint32_t> &timeStamps,
-                                         const QVector<QVector<int>> &channelData)
-{
-    if (channelData.isEmpty()) return;
-    if (timeStamps.isEmpty()) return;
-
-    int numCh = channelData.size();
-    int N     = timeStamps.size();
-    if (N <= 0) return;
-
-    int chSel = qBound(0, m_currentChStream2, numCh - 1);
-    const QVector<int> &chData = channelData[chSel];
-    int Nsingle = qMin(N, chData.size());
-    if (Nsingle <= 0) return;
-
-    // 1) 整段转成 µV
-    QVector<double> uVfull(Nsingle);
-    for (int i = 0; i < Nsingle; ++i) {
-        uVfull[i] = (double(chData[i]) - 32768.0) * 0.195;
-    }
-
-    // 2) 带通滤波（Stream2 独立控制）
-    QVector<double> y;
-    if (m_enableBandpass2 && m_abAlgo) {
-        m_abAlgo->setSampleRateHz(m_sampleRate);  // 或 30000.0
-        y = m_abAlgo->bandPassFilter(uVfull, m_bp2LowHz, m_bp2HighHz);
-        if (y.size() != Nsingle) {
-            y = uVfull;
-        }
-    } else {
-        y = uVfull;
-    }
-
-    const int decim = 30;
-
-    for (int i = 0; i < Nsingle; i += decim) {
-        uint32_t ts = timeStamps[i];
-        double tSec = double(ts) / m_sampleRate;
-        double val  = y[i];
-
-        m_bufferStream2.append(QPointF(tSec, val));
-    }
-
-    if (m_bufferStream2.isEmpty()) return;
-
-    double tMax = m_bufferStream2.last().x();
-    double tMin = tMax - m_stream2WindowSec;
-    if (tMin < 0.0) tMin = 0.0;
-
-    while (!m_bufferStream2.isEmpty() && m_bufferStream2.first().x() < tMin) {
-        m_bufferStream2.removeFirst();
-    }
-
-    // ⭐ 更新曲线
-    m_seriesStream2->replace(m_bufferStream2);
-
-    // Y 轴：自适应 / 固定
-    if (m_autoY2) {
-        double yMin = m_bufferStream2.first().y();
-        double yMax = yMin;
-        for (const auto &p : m_bufferStream2) {
-            if (p.y() < yMin) yMin = p.y();
-            if (p.y() > yMax) yMax = p.y();
-        }
-        double margin = 0.1 * (yMax - yMin + 1e-9);
-        m_axisY2->setRange(yMin - margin, yMax + margin);
-    } else {
-        m_axisY2->setRange(m_fixedY2Min, m_fixedY2Max);
-    }
-
-    m_axisX2->setRange(tMin, tMax);
-}
-
-
 
 void MainWindow::handleError(const QString &msg)
 {
@@ -811,211 +446,4 @@ void MainWindow::handleError(const QString &msg)
 void MainWindow::handleLog(const QString &msg)
 {
     appendLog(msg);
-}
-
-void MainWindow::onChannelChanged(int index)
-{
-    int ch = m_comboChannel->currentData().toInt();
-    m_currentChannel = ch;
-    appendLog(QString("切换单通道显示到 CH%1").arg(ch));
-
-    // 切换时可以清空单通道缓冲，避免残留旧通道的形状
-    m_buffer.clear();
-    m_series->clear();
-}
-
-
-void MainWindow::onStimOnce()
-{
-    if (!m_engine) return;
-
-    int triggerSource = 0;
-    m_engine->triggerStim(triggerSource, true);
-    appendLog("已触发刺激（使用当前已配置波形，trigger=0）");
-}
-
-void MainWindow::onBandpassToggled(bool checked)
-{
-    m_enableBandpass = checked;
-
-    // 开/关的时候日志里提示一下
-    if (checked) {
-        appendLog(QString("带通滤波：开启 [%1 - %2] Hz")
-                      .arg(m_bpLowHz)
-                      .arg(m_bpHighHz));
-    } else {
-        appendLog("带通滤波：关闭");
-    }
-
-    // 切换状态时清一下 buffer，避免旧数据混在一起
-    m_buffer.clear();
-    if (m_series) m_series->clear();
-}
-
-void MainWindow::onBandpassParamChanged(double /*value*/)
-{
-    double low  = m_spinBpLow->value();
-    double high = m_spinBpHigh->value();
-
-    // 防止用户把低频调得比高频还高，自动交换一下
-    if (low >= high) {
-        std::swap(low, high);
-        // 同步回 spinBox
-        m_spinBpLow->blockSignals(true);
-        m_spinBpHigh->blockSignals(true);
-        m_spinBpLow->setValue(low);
-        m_spinBpHigh->setValue(high);
-        m_spinBpLow->blockSignals(false);
-        m_spinBpHigh->blockSignals(false);
-    }
-
-    m_bpLowHz  = low;
-    m_bpHighHz = high;
-
-    appendLog(QString("更新带通范围: [%1 - %2] Hz")
-                  .arg(m_bpLowHz)
-                  .arg(m_bpHighHz));
-}
-
-void MainWindow::onAutoYChanged(bool checked)
-{
-    m_autoY = checked;
-
-    // 控制输入框是否可用
-    m_spinYMin->setEnabled(!checked);
-    m_spinYMax->setEnabled(!checked);
-
-    if (checked) {
-        appendLog("单通道 Y 轴：已切换为自适应");
-        // 下次刷新时会自动按数据范围缩放，这里不用立刻动 axis
-    } else {
-        appendLog(QString("单通道 Y 轴：已切换为固定 [%1, %2] µV")
-                      .arg(m_fixedYMin)
-                      .arg(m_fixedYMax));
-
-        // 立即应用当前固定范围
-        if (m_axisY) {
-            m_axisY->setRange(m_fixedYMin, m_fixedYMax);
-        }
-    }
-}
-
-void MainWindow::onYRangeEdited(double /*value*/)
-{
-    double ymin = m_spinYMin->value();
-    double ymax = m_spinYMax->value();
-
-    // 不允许 ymin >= ymax，自动调一下
-    if (ymin >= ymax) {
-        std::swap(ymin, ymax);
-
-        m_spinYMin->blockSignals(true);
-        m_spinYMax->blockSignals(true);
-        m_spinYMin->setValue(ymin);
-        m_spinYMax->setValue(ymax);
-        m_spinYMin->blockSignals(false);
-        m_spinYMax->blockSignals(false);
-    }
-
-    m_fixedYMin = ymin;
-    m_fixedYMax = ymax;
-
-    // 如果当前是“固定”模式，立刻更新图
-    if (!m_autoY && m_axisY) {
-        m_axisY->setRange(m_fixedYMin, m_fixedYMax);
-    }
-}
-
-void MainWindow::onAutoY2Changed(bool checked)
-{
-    m_autoY2 = checked;
-
-    m_spinY2Min->setEnabled(!checked);
-    m_spinY2Max->setEnabled(!checked);
-
-    if (checked) {
-        appendLog("Stream2 Y 轴：已切换为自适应");
-    } else {
-        appendLog(QString("Stream2 Y 轴：已切换为固定 [%1, %2] µV")
-                      .arg(m_fixedY2Min)
-                      .arg(m_fixedY2Max));
-        if (m_axisY2) {
-            m_axisY2->setRange(m_fixedY2Min, m_fixedY2Max);
-        }
-    }
-}
-
-void MainWindow::onY2RangeEdited(double /*value*/)
-{
-    double ymin = m_spinY2Min->value();
-    double ymax = m_spinY2Max->value();
-
-    if (ymin >= ymax) {
-        std::swap(ymin, ymax);
-        m_spinY2Min->blockSignals(true);
-        m_spinY2Max->blockSignals(true);
-        m_spinY2Min->setValue(ymin);
-        m_spinY2Max->setValue(ymax);
-        m_spinY2Min->blockSignals(false);
-        m_spinY2Max->blockSignals(false);
-    }
-
-    m_fixedY2Min = ymin;
-    m_fixedY2Max = ymax;
-
-    if (!m_autoY2 && m_axisY2) {
-        m_axisY2->setRange(m_fixedY2Min, m_fixedY2Max);
-    }
-}
-
-void MainWindow::onBandpass2Toggled(bool checked)
-{
-    m_enableBandpass2 = checked;
-
-    if (checked) {
-        appendLog(QString("Stream2 带通滤波：开启 [%1 - %2] Hz")
-                      .arg(m_bp2LowHz)
-                      .arg(m_bp2HighHz));
-    } else {
-        appendLog("Stream2 带通滤波：关闭");
-    }
-
-    // 切换时清理 Stream2 图像缓存
-    m_bufferStream2.clear();
-    if (m_seriesStream2) m_seriesStream2->clear();
-}
-
-void MainWindow::onBandpass2ParamChanged(double /*value*/)
-{
-    double low  = m_spinBp2Low->value();
-    double high = m_spinBp2High->value();
-
-    if (low >= high) {
-        std::swap(low, high);
-        m_spinBp2Low->blockSignals(true);
-        m_spinBp2High->blockSignals(true);
-        m_spinBp2Low->setValue(low);
-        m_spinBp2High->setValue(high);
-        m_spinBp2Low->blockSignals(false);
-        m_spinBp2High->blockSignals(false);
-    }
-
-    m_bp2LowHz  = low;
-    m_bp2HighHz = high;
-
-    appendLog(QString("更新 Stream2 带通范围: [%1 - %2] Hz")
-                  .arg(m_bp2LowHz)
-                  .arg(m_bp2HighHz));
-}
-
-void MainWindow::onEpochDurationChanged(double sec)
-{
-    colletion_time = sec;
-
-    // 如果 experiment 已经存在，立刻更新（下一轮 epoch 生效）
-    if (m_experiment) {
-        m_experiment->setEpochDuration(colletion_time);
-    }
-
-    appendLog(QString("Epoch 时长设置为 %1 s").arg(colletion_time, 0, 'f', 2));
 }
