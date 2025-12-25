@@ -93,6 +93,7 @@ private:
 
     // ⭐ 新的录制函数：直接将一个 RHXDataBlock 按 Intan 官方格式写入文件
     void writeBlockToRecording(RHXDataBlock *block);
+    void writeBlockStream();
 
 private:
     RHXController   *m_rhxController   = nullptr;

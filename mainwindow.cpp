@@ -3,8 +3,10 @@
 #include <QDateTime>
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent)
+    : QMainWindow(parent),
+    colletion_time(5.0)
 {
+
     setupUi();
     setupSinglePlot();
     setupStream2Plot();
@@ -66,6 +68,18 @@ void MainWindow::setupUi()
     buttonLayout->addWidget(m_btnStim);
     buttonLayout->addWidget(m_btnRecStart);
     buttonLayout->addWidget(m_btnRecStop);
+    // ===== Epoch 时长设置（秒）=====
+    buttonLayout->addWidget(new QLabel(tr("Epoch:"), this));
+
+    m_spinEpochSec = new QDoubleSpinBox(this);
+    m_spinEpochSec->setRange(0.1, 3600.0);   // 0.1s ~ 1小时，按需改
+    m_spinEpochSec->setDecimals(2);
+    m_spinEpochSec->setSingleStep(0.5);
+    m_spinEpochSec->setSuffix(" s");
+    m_spinEpochSec->setValue(colletion_time);
+
+    buttonLayout->addWidget(m_spinEpochSec);
+
     buttonLayout->addStretch(1);  // 右边空出来一点
 
     m_layout->addLayout(buttonLayout);
@@ -232,6 +246,12 @@ void MainWindow::setupUi()
             this,          &MainWindow::onRecStart);
     connect(m_btnRecStop,  &QPushButton::clicked,
             this,          &MainWindow::onRecStop);
+
+    connect(m_spinEpochSec,
+            QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this,
+            &MainWindow::onEpochDurationChanged);
+
 
     // ===== 单通道（Stream0）通道选择 =====
     connect(m_comboChannel,
@@ -447,11 +467,13 @@ void MainWindow::onStart()
 
     // 3）启动 AB epoch 控制器（比如 5s）
     if (m_experiment) {
-        m_experiment->setEpochDuration(5.0);
+        m_experiment->setEpochDuration(colletion_time);
         m_experiment->start();
     }
 
-    appendLog("开始采集 + AB 5s epoch 采集");
+    appendLog(QString("开始采集 + AB %1s epoch 采集")
+                  .arg(colletion_time, 0, 'f', 2));
+
 }
 
 void MainWindow::onStop()
@@ -487,6 +509,7 @@ void MainWindow::onRecStop()
     if (!m_engine) return;
     m_engine->stopBinaryRecording();
 }
+
 void MainWindow::onABEpochReady(int phaseIndex,
                                 const QVector<uint32_t> &timeStamps,
                                 const QVector<QVector<int>> &channelData)
@@ -983,4 +1006,16 @@ void MainWindow::onBandpass2ParamChanged(double /*value*/)
     appendLog(QString("更新 Stream2 带通范围: [%1 - %2] Hz")
                   .arg(m_bp2LowHz)
                   .arg(m_bp2HighHz));
+}
+
+void MainWindow::onEpochDurationChanged(double sec)
+{
+    colletion_time = sec;
+
+    // 如果 experiment 已经存在，立刻更新（下一轮 epoch 生效）
+    if (m_experiment) {
+        m_experiment->setEpochDuration(colletion_time);
+    }
+
+    appendLog(QString("Epoch 时长设置为 %1 s").arg(colletion_time, 0, 'f', 2));
 }

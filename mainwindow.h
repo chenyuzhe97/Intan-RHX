@@ -64,6 +64,8 @@ private slots:
     // ⭐ 新增：Stream2 带通滤波
     void onBandpass2Toggled(bool checked);
     void onBandpass2ParamChanged(double value);
+    void onEpochDurationChanged(double sec);
+
 
 private:
     void setupUi();
@@ -82,6 +84,8 @@ private:
     QPushButton      *m_btnRecStart = nullptr;
     QPushButton      *m_btnRecStop  = nullptr;
     QPlainTextEdit   *m_logView = nullptr;
+    QDoubleSpinBox *m_spinEpochSec = nullptr;   // epoch 时长(秒)
+
 
     AcquisitionEngine        *m_engine     = nullptr;
     ABAlgorithm              *m_abAlgo     = nullptr;
@@ -160,4 +164,6 @@ private:
     bool   m_enableBandpass2 = false;
     double m_bp2LowHz        = 300.0;
     double m_bp2HighHz       = 3000.0;
+
+    double colletion_time;
 };

@@ -147,7 +147,7 @@ void AcquisitionEngine::onUsbTimer()
 
     // 这里你原来写死 16，也可以换成 blocksToRead
     bool usbDataRead =
-        m_rhxController->readDataBlocks(blocksToRead, m_dataQueue);
+        m_rhxController->readDataBlocks(16, m_dataQueue);
 
     if (!usbDataRead && !m_rhxController->isRunning()) {
         // 没有更多数据，可能被停止了
@@ -240,7 +240,9 @@ void AcquisitionEngine::processDataQueue()
         // 录制：直接按 Intan 官方格式把整个 block 写入文件
         // ------------------------------------------------------------
         if (m_isRecording) {
-            writeBlockToRecording(block);
+            writeBlockStream();
+            // writeBlockToRecording(block);
+
         }
 
         // 释放 block
@@ -274,6 +276,11 @@ void AcquisitionEngine::writeBlockToRecording(RHXDataBlock *block)
 
     // 这和示例里的 queueToFile 在底层是一致的：按 Intan 定义格式写一个 USB data block
     block->write(m_recordStream, numStreams);
+}
+
+void AcquisitionEngine::writeBlockStream()
+{
+    m_rhxController->queueToFile(m_dataQueue,m_recordStream);
 }
 
 // ====== 刺激相关接口 ======
