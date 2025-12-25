@@ -147,7 +147,7 @@ void AcquisitionEngine::onUsbTimer()
 
     // 这里你原来写死 16，也可以换成 blocksToRead
     bool usbDataRead =
-        m_rhxController->readDataBlocks(16, m_dataQueue);
+        m_rhxController->readDataBlocks(blocksToRead, m_dataQueue);
 
     if (!usbDataRead && !m_rhxController->isRunning()) {
         // 没有更多数据，可能被停止了
@@ -160,95 +160,63 @@ void AcquisitionEngine::onUsbTimer()
 
 void AcquisitionEngine::processDataQueue()
 {
-    // 如果设备还没打开，或者暂时没有数据块，直接返回
     if (!m_deviceOpened) return;
     if (m_dataQueue.empty()) return;
 
-    // getNumEnabledDataStreams() 是实际启用的 stream 数量。
     int numStreams = m_rhxController->getNumEnabledDataStreams();
     if (numStreams <= 0) return;
 
-    // streamIdx0 永远指向第一个启用的流（A 端）
     const int streamIdx0 = 0;
-
-    // 如果启用了第二个流，则它是 streamIdx1（第二个启用的流），否则设为 -1
     const int streamIdx1 = (numStreams > 1) ? 1 : -1;
 
-    // ============================================================
-    // 主循环：每次处理队列中的一个 RHXDataBlock
-    // ============================================================
+    const int blocksCount = (int)m_dataQueue.size();
+    RHXDataBlock *first = m_dataQueue.front();
+    const int samplesPerBlock = first->samplesPerDataBlock();
+    const int totalSamples = blocksCount * samplesPerBlock;
+
+    // ===== 聚合缓存：stream0 =====
+    QVector<uint32_t> ts0; ts0.reserve(totalSamples);
+    QVector<QVector<int>> ch0(m_channelsPerStream);
+    for (int ch=0; ch<m_channelsPerStream; ++ch) ch0[ch].reserve(totalSamples);
+
+    // ===== 聚合缓存：stream2（如果有） =====
+    QVector<uint32_t> ts1;
+    QVector<QVector<int>> ch1;
+    if (streamIdx1 >= 0) {
+        ts1.reserve(totalSamples);
+        ch1 = QVector<QVector<int>>(m_channelsPerStream);
+        for (int ch=0; ch<m_channelsPerStream; ++ch) ch1[ch].reserve(totalSamples);
+    }
+
     while (!m_dataQueue.empty()) {
         RHXDataBlock *block = m_dataQueue.front();
         m_dataQueue.pop_front();
 
-        // 通常 Intan 的一个 block 内包含固定数量的样本（如 128）
-        int samplesPerBlock = block->samplesPerDataBlock();
+        for (int t=0; t<samplesPerBlock; ++t) {
+            uint32_t ts = block->timeStamp(t);
+            ts0.append(ts);
+            for (int ch=0; ch<m_channelsPerStream; ++ch)
+                ch0[ch].append(block->amplifierData(streamIdx0, ch, t));
 
-        // ------------------------------------------------------------
-        // 处理 stream 0（A 端）
-        // ------------------------------------------------------------
-
-        // 时间戳缓存
-        QVector<uint32_t> timeStamps0(samplesPerBlock);
-
-        // 数据缓存：通道数 × samplesPerBlock
-        QVector<QVector<int>> channelData0(
-            m_channelsPerStream,
-            QVector<int>(samplesPerBlock));
-
-        // 遍历 block 中的每个样本点
-        for (int t = 0; t < samplesPerBlock; ++t) {
-            // timestamp 单位 = sample index
-            timeStamps0[t] = block->timeStamp(t);
-
-            // 读取每个通道的放大器数据（原始 16-bit ADC）
-            for (int ch = 0; ch < m_channelsPerStream; ++ch) {
-                int value = block->amplifierData(streamIdx0, ch, t);
-                // 不转 uV，在 GUI 或算法层再转：
-                //   uV = (value - 32768) * 0.195
-                channelData0[ch][t] = value;
+            if (streamIdx1 >= 0) {
+                ts1.append(ts);
+                for (int ch=0; ch<m_channelsPerStream; ++ch)
+                    ch1[ch].append(block->amplifierData(streamIdx1, ch, t));
             }
         }
 
-        // 1) 发射信号给 GUI（实时波形）与闭环算法
-        emit newSamples(timeStamps0, channelData0);
-
-        // ------------------------------------------------------------
-        // 处理第二个数据流（例如 B 端 / stream2）——如果存在
-        // ------------------------------------------------------------
-        if (streamIdx1 >= 0) {
-            QVector<uint32_t> timeStamps2(samplesPerBlock);
-            QVector<QVector<int>> channelData2(
-                m_channelsPerStream,
-                QVector<int>(samplesPerBlock));
-
-            for (int t = 0; t < samplesPerBlock; ++t) {
-                // 所有流共享同一个时间戳
-                timeStamps2[t] = block->timeStamp(t);
-
-                for (int ch = 0; ch < m_channelsPerStream; ++ch) {
-                    int value = block->amplifierData(streamIdx1, ch, t);
-                    channelData2[ch][t] = value;
-                }
-            }
-
-            // GUI 用的第二路波形
-            emit newSamplesStream2(timeStamps2, channelData2);
-        }
-
-        // ------------------------------------------------------------
-        // 录制：直接按 Intan 官方格式把整个 block 写入文件
-        // ------------------------------------------------------------
+        // 录制：建议这里用 writeBlockToRecording(block)（你现在 writeBlockStream() 逻辑其实不太对）
         if (m_isRecording) {
-            writeBlockStream();
-            // writeBlockToRecording(block);
-
+            writeBlockToRecording(block);
         }
 
-        // 释放 block
         delete block;
     }
+
+    emit newSamples(ts0, ch0);
+    if (streamIdx1 >= 0) emit newSamplesStream2(ts1, ch1);
 }
+
 
 void AcquisitionEngine::pauseContinuousForStim()
 {
