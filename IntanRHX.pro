@@ -142,8 +142,10 @@ SOURCES += main.cpp \
     abalgorithm.cpp \
     acquisitionengine.cpp \
     controller.cpp \
+    dsp_biquad.cpp \
     electrodeparameters.cpp \
     experimentcontrollerab.cpp \
+    fft_window.cpp \
     mainwindow.cpp \
     stackedwavewidget.cpp \
     stimlogwriter.cpp \
@@ -271,8 +273,10 @@ HEADERS += \
     abalgorithm.h \
     acquisitionengine.h \
     controller.h \
+    dsp_biquad.h \
     electrodeparameters.h \
     experimentcontrollerab.h \
+    fft_window.h \
     mainwindow.h \
     stackedwavewidget.h \
     stimlogwriter.h \

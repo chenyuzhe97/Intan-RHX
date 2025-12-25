@@ -293,7 +293,7 @@ void AcquisitionEngine::triggerStim(int triggerSource, bool on)
     if (!m_deviceOpened || !m_stimController) return;
 
     // 直接用你已有的接口（注意这里你原来是 triggerSource-24，看你整体工程怎么定义）
-    m_stimController->stimTrigger(triggerSource-24, on);
+    m_stimController->stimTrigger(triggerSource, on);
 }
 
 void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
