@@ -3,6 +3,14 @@
 #include <QFileDialog>
 #include <QDateTime>
 #include <QDir>
+#include <QSettings>
+#include <QDockWidget>
+#include <QGroupBox>
+#include <QFormLayout>
+#include <QLineEdit>
+#include <QSpinBox>
+#include <QMessageBox>
+#include <QRegularExpression>
 
 static StackedWaveWidget::FilterSettings buildFilterSettingsFromUi(
     QCheckBox *chkFilter, QComboBox *cmbType,
@@ -35,6 +43,9 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
     setupUi();
+
+    setupElectrodeConfigDock();
+    loadElectrodeConfig();
 
     // ===== core =====
     m_engine     = new AcquisitionEngine(this);
@@ -348,6 +359,243 @@ QVector<int> MainWindow::meanSelectedChannels(const QVector<QVector<int> > &chan
     return out;
 }
 
+
+QString MainWindow::formatChannels1Based(const QVector<int> &zeroBased)
+{
+    QStringList parts;
+    parts.reserve(zeroBased.size());
+    for (int ch0 : zeroBased) {
+        parts << QString::number(ch0 + 1);
+    }
+    return parts.join(",");
+}
+
+bool MainWindow::parseChannels1Based(const QString &text, QVector<int> &outZeroBased, QString *err)
+{
+    const QString t = text.trimmed();
+    if (t.isEmpty()) {
+        if (err) *err = QStringLiteral("不能为空。示例：1,5,7");
+        return false;
+    }
+
+    // split by comma / space / semicolon
+    const QRegularExpression re(QStringLiteral(R"([,\s;]+)"));
+    const QStringList tokens = t.split(re, Qt::SkipEmptyParts);
+
+    QVector<int> v;
+    v.reserve(tokens.size());
+
+    for (const QString &tok : tokens) {
+        bool ok = false;
+        const int val1 = tok.toInt(&ok);
+        if (!ok) {
+            if (err) *err = QStringLiteral("包含非数字：%1").arg(tok);
+            return false;
+        }
+        if (val1 <= 0) {
+            if (err) *err = QStringLiteral("通道必须为正整数(1-based)：%1").arg(val1);
+            return false;
+        }
+        v.push_back(val1 - 1); // to 0-based
+    }
+
+    if (v.isEmpty()) {
+        if (err) *err = QStringLiteral("未解析到任何通道。示例：1,5,7");
+        return false;
+    }
+
+    outZeroBased = v;
+    return true;
+}
+
+void MainWindow::setupElectrodeConfigDock()
+{
+    // Dock on the right
+    m_dockElectrode = new QDockWidget(tr("Electrode Config"), this);
+    m_dockElectrode->setObjectName("dockElectrodeConfig");
+
+    QWidget *panel = new QWidget(m_dockElectrode);
+    QVBoxLayout *root = new QVBoxLayout(panel);
+
+    // ---- Sense group
+    QGroupBox *gbSense = new QGroupBox(tr("Sense channels (UI is 1-based, internal is 0-based)"), panel);
+    QFormLayout *senseLayout = new QFormLayout(gbSense);
+
+    m_editSense_A_a = new QLineEdit(gbSense);
+    m_editSense_A_b = new QLineEdit(gbSense);
+    m_editSense_B_a = new QLineEdit(gbSense);
+    m_editSense_B_b = new QLineEdit(gbSense);
+
+    m_editSense_A_a->setPlaceholderText("e.g. 1,5,7");
+    m_editSense_A_b->setPlaceholderText("e.g. 9,11,15");
+    m_editSense_B_a->setPlaceholderText("e.g. 1,5,7");
+    m_editSense_B_b->setPlaceholderText("e.g. 9,11,15");
+
+    senseLayout->addRow(tr("Mouse A: a (stream0)"), m_editSense_A_a);
+    senseLayout->addRow(tr("Mouse A: b (stream0)"), m_editSense_A_b);
+    senseLayout->addRow(tr("Mouse B: a' (stream2)"), m_editSense_B_a);
+    senseLayout->addRow(tr("Mouse B: b' (stream2)"), m_editSense_B_b);
+
+    // ---- Stim group
+    QGroupBox *gbStim = new QGroupBox(tr("Stim electrodes (prefix fixed A/B)"), panel);
+    QFormLayout *stimLayout = new QFormLayout(gbStim);
+
+    auto makeStimEditor = [&](const QString &prefix, QSpinBox *&spinOut) -> QWidget* {
+        QWidget *w = new QWidget(gbStim);
+        QHBoxLayout *hl = new QHBoxLayout(w);
+        hl->setContentsMargins(0,0,0,0);
+        QLabel *lab = new QLabel(prefix, w);
+        spinOut = new QSpinBox(w);
+        spinOut->setRange(1, 64); // TODO: 如果你的电极编号范围不是 1..64，自行改这里
+        spinOut->setSingleStep(1);
+        hl->addWidget(lab);
+        hl->addWidget(spinOut, 1);
+        w->setLayout(hl);
+        return w;
+    };
+
+    stimLayout->addRow(tr("Stim A a:"),  makeStimEditor("A", m_spinStim_A_a));
+    stimLayout->addRow(tr("Stim A b:"),  makeStimEditor("A", m_spinStim_A_b));
+    stimLayout->addRow(tr("Stim B a':"), makeStimEditor("B", m_spinStim_B_a));
+    stimLayout->addRow(tr("Stim B b':"), makeStimEditor("B", m_spinStim_B_b));
+
+    // ---- Apply button
+    m_btnApplyElectrode = new QPushButton(tr("Apply"), panel);
+
+    root->addWidget(gbSense);
+    root->addWidget(gbStim);
+    root->addWidget(m_btnApplyElectrode);
+    root->addStretch(1);
+
+    panel->setLayout(root);
+    m_dockElectrode->setWidget(panel);
+
+    addDockWidget(Qt::RightDockWidgetArea, m_dockElectrode);
+
+    connect(m_btnApplyElectrode, &QPushButton::clicked,
+            this, &MainWindow::applyElectrodeConfigFromUi);
+
+    // 初始化 UI 为当前默认值
+    m_editSense_A_a->setText(formatChannels1Based(kSense_A_a));
+    m_editSense_A_b->setText(formatChannels1Based(kSense_A_b));
+    m_editSense_B_a->setText(formatChannels1Based(kSense_B_a));
+    m_editSense_B_b->setText(formatChannels1Based(kSense_B_b));
+
+    auto parseSuffix = [](const QString &name, const QChar expectedPrefix, int fallback) -> int {
+        if (name.size() >= 2 && name[0] == expectedPrefix) {
+            bool ok = false;
+            const int n = name.mid(1).toInt(&ok);
+            if (ok && n > 0) return n;
+        }
+        return fallback;
+    };
+
+    m_spinStim_A_a->setValue(parseSuffix(kStim_A_a, QChar('A'), 2));
+    m_spinStim_A_b->setValue(parseSuffix(kStim_A_b, QChar('A'), 7));
+    m_spinStim_B_a->setValue(parseSuffix(kStim_B_a, QChar('B'), 2));
+    m_spinStim_B_b->setValue(parseSuffix(kStim_B_b, QChar('B'), 7));
+}
+
+void MainWindow::loadElectrodeConfig()
+{
+    if (!m_dockElectrode) return;
+
+    QSettings s;
+
+    // Sense texts are stored as 1-based string like "1,5,7"
+    const QString tA_a = s.value("electrode/sense_A_a", m_editSense_A_a->text()).toString();
+    const QString tA_b = s.value("electrode/sense_A_b", m_editSense_A_b->text()).toString();
+    const QString tB_a = s.value("electrode/sense_B_a", m_editSense_B_a->text()).toString();
+    const QString tB_b = s.value("electrode/sense_B_b", m_editSense_B_b->text()).toString();
+
+    m_editSense_A_a->setText(tA_a);
+    m_editSense_A_b->setText(tA_b);
+    m_editSense_B_a->setText(tB_a);
+    m_editSense_B_b->setText(tB_b);
+
+    // Stim numbers
+    m_spinStim_A_a->setValue(s.value("electrode/stim_A_a_num", m_spinStim_A_a->value()).toInt());
+    m_spinStim_A_b->setValue(s.value("electrode/stim_A_b_num", m_spinStim_A_b->value()).toInt());
+    m_spinStim_B_a->setValue(s.value("electrode/stim_B_a_num", m_spinStim_B_a->value()).toInt());
+    m_spinStim_B_b->setValue(s.value("electrode/stim_B_b_num", m_spinStim_B_b->value()).toInt());
+
+    // Apply to members (silent, invalid string -> keep old defaults)
+    QString err;
+    QVector<int> tmp;
+
+    if (parseChannels1Based(m_editSense_A_a->text(), tmp, &err)) kSense_A_a = tmp;
+    if (parseChannels1Based(m_editSense_A_b->text(), tmp, &err)) kSense_A_b = tmp;
+    if (parseChannels1Based(m_editSense_B_a->text(), tmp, &err)) kSense_B_a = tmp;
+    if (parseChannels1Based(m_editSense_B_b->text(), tmp, &err)) kSense_B_b = tmp;
+
+    kStim_A_a = QString("A%1").arg(m_spinStim_A_a->value());
+    kStim_A_b = QString("A%1").arg(m_spinStim_A_b->value());
+    kStim_B_a = QString("B%1").arg(m_spinStim_B_a->value());
+    kStim_B_b = QString("B%1").arg(m_spinStim_B_b->value());
+}
+
+void MainWindow::saveElectrodeConfig() const
+{
+    if (!m_dockElectrode) return;
+
+    QSettings s;
+    s.setValue("electrode/sense_A_a", m_editSense_A_a->text().trimmed());
+    s.setValue("electrode/sense_A_b", m_editSense_A_b->text().trimmed());
+    s.setValue("electrode/sense_B_a", m_editSense_B_a->text().trimmed());
+    s.setValue("electrode/sense_B_b", m_editSense_B_b->text().trimmed());
+
+    s.setValue("electrode/stim_A_a_num", m_spinStim_A_a->value());
+    s.setValue("electrode/stim_A_b_num", m_spinStim_A_b->value());
+    s.setValue("electrode/stim_B_a_num", m_spinStim_B_a->value());
+    s.setValue("electrode/stim_B_b_num", m_spinStim_B_b->value());
+}
+
+void MainWindow::applyElectrodeConfigFromUi()
+{
+    QString err;
+    QVector<int> tmp;
+
+    if (!parseChannels1Based(m_editSense_A_a->text(), tmp, &err)) {
+        QMessageBox::warning(this, tr("Invalid A a sense list"), err);
+        return;
+    }
+    kSense_A_a = tmp;
+
+    if (!parseChannels1Based(m_editSense_A_b->text(), tmp, &err)) {
+        QMessageBox::warning(this, tr("Invalid A b sense list"), err);
+        return;
+    }
+    kSense_A_b = tmp;
+
+    if (!parseChannels1Based(m_editSense_B_a->text(), tmp, &err)) {
+        QMessageBox::warning(this, tr("Invalid B a' sense list"), err);
+        return;
+    }
+    kSense_B_a = tmp;
+
+    if (!parseChannels1Based(m_editSense_B_b->text(), tmp, &err)) {
+        QMessageBox::warning(this, tr("Invalid B b' sense list"), err);
+        return;
+    }
+    kSense_B_b = tmp;
+
+    // Stim strings
+    kStim_A_a = QString("A%1").arg(m_spinStim_A_a->value());
+    kStim_A_b = QString("A%1").arg(m_spinStim_A_b->value());
+    kStim_B_a = QString("B%1").arg(m_spinStim_B_a->value());
+    kStim_B_b = QString("B%1").arg(m_spinStim_B_b->value());
+
+    saveElectrodeConfig();
+
+    appendLog(QString("ElectrodeConfig applied. "
+                      "SenseA(a)=[%1] SenseA(b)=[%2] SenseB(a')=[%3] SenseB(b')=[%4]; "
+                      "StimA(a)=%5 StimA(b)=%6 StimB(a')=%7 StimB(b')=%8")
+                  .arg(formatChannels1Based(kSense_A_a))
+                  .arg(formatChannels1Based(kSense_A_b))
+                  .arg(formatChannels1Based(kSense_B_a))
+                  .arg(formatChannels1Based(kSense_B_b))
+                  .arg(kStim_A_a).arg(kStim_A_b).arg(kStim_B_a).arg(kStim_B_b));
+}
 void MainWindow::applyDspSettings()
 {
     if (!m_viewA || !m_viewB) return;
@@ -490,6 +738,8 @@ void MainWindow::onGainBChanged(double halfRangeUv)
     if (m_viewB) m_viewB->setGainUv(halfRangeUv);
 }
 
+
+
 void MainWindow::onABEpochReady(int phaseIndex,
                                 const QVector<uint32_t> &timeStamps,
                                 const QVector<QVector<int>> &channelData)
@@ -498,25 +748,24 @@ void MainWindow::onABEpochReady(int phaseIndex,
     if (!m_abAlgo || !m_engine) return;
     if (timeStamps.isEmpty() || channelData.isEmpty()) return;
 
-    // ===== 1) 先按通道列表把 16ch -> 2ch（a平均/b平均）=====
+    // 1) 按 phase 选择通道列表，算两条平均信号：avg[0]=a区，avg[1]=b区
     const QVector<int> &sel_a = (phaseIndex == 0) ? kSense_A_a : kSense_B_a;
     const QVector<int> &sel_b = (phaseIndex == 0) ? kSense_A_b : kSense_B_b;
 
     QVector<int> avg_a = meanSelectedChannels(channelData, sel_a);
     QVector<int> avg_b = meanSelectedChannels(channelData, sel_b);
 
-    if (avg_a.isEmpty() || avg_b.isEmpty() ||
-        avg_a.size() != timeStamps.size() || avg_b.size() != timeStamps.size()) {
-        appendLog(phaseName + ": 平均信号生成失败（通道列表无效或长度不匹配）");
+    if (avg_a.isEmpty() || avg_b.isEmpty() || avg_a.size() != timeStamps.size() || avg_b.size() != timeStamps.size()) {
+        appendLog(phaseName + ": 平均信号生成失败（通道列表/数据长度不匹配）");
         return;
     }
 
     QVector<QVector<int>> avgChannelData;
     avgChannelData.reserve(2);
-    avgChannelData.push_back(avg_a); // channelIndex=0 -> a区
-    avgChannelData.push_back(avg_b); // channelIndex=1 -> b区
+    avgChannelData.push_back(avg_a); // chIndex=0 -> a区平均
+    avgChannelData.push_back(avg_b); // chIndex=1 -> b区平均
 
-    // ===== 2) 关键：把 a/b 两路分别送进算法 =====
+    // 2) 把“2路平均信号”送进你现有算法（算法不用改，仍然做滤波+尖峰检测）
     const QVector<ABAlgorithm::Result> allResults =
         m_abAlgo->analyzeEpoch(phaseIndex, timeStamps, avgChannelData);
 
@@ -525,58 +774,48 @@ void MainWindow::onABEpochReady(int phaseIndex,
         return;
     }
 
-    // ===== 3) Phase 决定刺激对象；保持你现有“配置24/25，触发0/1”的体系不改 =====
-    // PhaseA：刺激老鼠B；PhaseB：刺激老鼠A
+    // 3) phase->triggerSource 不变：你说“配置24/25，触发0/1”，那这里继续沿用
+    //    仍然：PhaseA 刺激老鼠B 用 triggerSource=1；PhaseB 刺激老鼠A 用 triggerSource=0
     const int triggerSource = (phaseIndex == 0) ? 1 : 0;
 
-    auto electrodeForRegion = [&](int regionIdx /*0=a, 1=b*/) -> QString {
-        if (phaseIndex == 0) { // A -> B
-            return (regionIdx == 0) ? kStim_B_a : kStim_B_b;
-        } else {               // B -> A
-            return (regionIdx == 0) ? kStim_A_a : kStim_A_b;
+    // 4) 按 a/b 区域决定刺激电极名字（关键：一条平均信号对应一根刺激电极）
+    auto electrodeForAvgIndex = [&](int avgIndex) -> QString {
+        if (phaseIndex == 0) { // A -> 刺激 B
+            return (avgIndex == 0) ? kStim_B_a : kStim_B_b;
+        } else {               // B -> 刺激 A
+            return (avgIndex == 0) ? kStim_A_a : kStim_A_b;
         }
     };
 
-    // ===== 4) 每路各取最多10个（你要的重点）=====
-    QVector<ABAlgorithm::Result> candA; // channelIndex==0 (a平均)
-    QVector<ABAlgorithm::Result> candB; // channelIndex==1 (b平均)
+    const uint32_t epochStartTs = timeStamps.first();
+    const double fs = (m_sampleRate > 0.0 ? m_sampleRate : 30000.0);
 
+    // 5) 只保留需要刺激的候选
+    QVector<ABAlgorithm::Result> candidates;
+    candidates.reserve(allResults.size());
     for (const auto &r : allResults) {
         if (!r.needStim) continue;
         if (r.suggestedAmplitude_uA <= 0) continue;
-        if (r.channelIndex == 0) candA.push_back(r);
-        else if (r.channelIndex == 1) candB.push_back(r);
+        candidates.push_back(r);
     }
-
-    if (candA.isEmpty() && candB.isEmpty()) {
+    if (candidates.isEmpty()) {
         appendLog(phaseName + ": 无需刺激");
         return;
     }
 
-    auto topKByAmp = [](QVector<ABAlgorithm::Result> &v, int k) {
-        std::sort(v.begin(), v.end(),
-                  [](const ABAlgorithm::Result &a, const ABAlgorithm::Result &b) {
-                      return a.spikeAmplitude_uV > b.spikeAmplitude_uV;
-                  });
-        if (v.size() > k) v.resize(k);
-    };
+    // 强度最大 10 个
+    std::sort(candidates.begin(), candidates.end(),
+              [](const ABAlgorithm::Result &a, const ABAlgorithm::Result &b) {
+                  return a.spikeAmplitude_uV > b.spikeAmplitude_uV;
+              });
+    const int maxStimPerEpoch = 10;
+    if (candidates.size() > maxStimPerEpoch) candidates.resize(maxStimPerEpoch);
 
-    const int maxPerRegion = 10;
-    topKByAmp(candA, maxPerRegion);
-    topKByAmp(candB, maxPerRegion);
-
-    QVector<ABAlgorithm::Result> candidates = candA;
-    candidates += candB;
-
-    // 合并后按时间排序：按你说的“时间顺序依次触发”
+    // 按时间排序
     std::sort(candidates.begin(), candidates.end(),
               [](const ABAlgorithm::Result &a, const ABAlgorithm::Result &b) {
                   return a.triggerTime < b.triggerTime;
               });
-
-    // ===== 5) 生成计划 + singleShot 触发 =====
-    const uint32_t epochStartTs = timeStamps.first();
-    const double fs = (m_sampleRate > 0.0 ? m_sampleRate : 30000.0);
 
     const int epochId = ++m_epochCounter;
 
@@ -586,15 +825,12 @@ void MainWindow::onABEpochReady(int phaseIndex,
     for (int i = 0; i < candidates.size(); ++i) {
         const auto &r = candidates[i];
 
-        const int regionIdx = (r.channelIndex == 0) ? 0 : 1; // 0=a, 1=b
-        const QString targetElectrode = electrodeForRegion(regionIdx);
+        const QString targetElectrode = electrodeForAvgIndex(r.channelIndex); // 0->a区电极, 1->b区电极
 
         int pulses = (r.suggestedNumPulses > 0) ? r.suggestedNumPulses : 1;
 
         double offsetSec = 0.0;
-        if (r.triggerTime >= epochStartTs)
-            offsetSec = double(r.triggerTime - epochStartTs) / fs;
-
+        if (r.triggerTime >= epochStartTs) offsetSec = double(r.triggerTime - epochStartTs) / fs;
         const double offsetMs = offsetSec * 1000.0;
         int delayMs = int(offsetMs);
         if (delayMs < 0) delayMs = 0;
@@ -604,9 +840,9 @@ void MainWindow::onABEpochReady(int phaseIndex,
         it.offsetMs = offsetMs;
         it.amp_uA = r.suggestedAmplitude_uA;
         it.pulses = pulses;
-        it.ch = r.channelIndex;          // 0/1 => a平均/b平均
+        it.ch = r.channelIndex;          // 这里现在是 0/1，代表 a平均/b平均
         it.spike_uV = r.spikeAmplitude_uV;
-        it.electrode = targetElectrode;  // ✅ 按 region 分流到对应刺激电极
+        it.electrode = targetElectrode;  // 关键：每条事件写入对应的刺激电极
         it.fired = false;
         items.push_back(it);
 
@@ -616,13 +852,11 @@ void MainWindow::onABEpochReady(int phaseIndex,
         }
 
         QTimer::singleShot(delayMs, this,
-                           [this, epochId, phaseIndex, itemIdx=i,
-                            targetElectrode, triggerSource,
+                           [this, epochId, itemIdx=i,
+                            targetElectrode,
+                            triggerSource,
                             amp=it.amp_uA, pulses=it.pulses]() {
-
                                if (m_timeline) m_timeline->markFired(epochId, itemIdx);
-                               if (m_stimLog)  m_stimLog->logFired(epochId, phaseIndex, itemIdx, targetElectrode, amp, pulses);
-
                                if (!m_engine) return;
                                m_engine->applyAdaptiveStim(targetElectrode, amp, pulses, triggerSource);
                            });
@@ -633,10 +867,9 @@ void MainWindow::onABEpochReady(int phaseIndex,
         ensureTimelineVisible();
     }
 
-    appendLog(QString("%1: epochId=%2 计划刺激=%3（a<=%4, b<=%4）")
-                  .arg(phaseName).arg(epochId).arg(items.size()).arg(maxPerRegion));
+    appendLog(QString("%1: epochId=%2 计划刺激=%3")
+                  .arg(phaseName).arg(epochId).arg(items.size()));
 }
-
 
 
 void MainWindow::handleError(const QString &msg)

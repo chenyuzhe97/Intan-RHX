@@ -12,6 +12,9 @@
 #include <QTimer>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDockWidget>
+#include <QLineEdit>
+#include <QSpinBox>
 
 #include "acquisitionengine.h"
 #include "abalgorithm.h"
@@ -45,6 +48,9 @@ private slots:
     void applyDspSettings();
     void onToggleFftWindows();
 
+    // Electrode config dock
+    void applyElectrodeConfigFromUi();
+
     void onABEpochReady(int phaseIndex,
                         const QVector<uint32_t> &timeStamps,
                         const QVector<QVector<int>> &channelData);
@@ -59,6 +65,14 @@ private:
     void ensureFftVisible();
     QVector<int> meanSelectedChannels(const QVector<QVector<int>> &channelData,
                                       const QVector<int> &sel);
+
+    // ===== Electrode config (GUI) =====
+    void setupElectrodeConfigDock();
+    void loadElectrodeConfig();
+    void saveElectrodeConfig() const;
+
+    static QString formatChannels1Based(const QVector<int> &zeroBased);
+    static bool parseChannels1Based(const QString &text, QVector<int> &outZeroBased, QString *err = nullptr);
 
 private:
     QWidget        *m_central = nullptr;
@@ -123,20 +137,35 @@ private:
     double colletion_time = 5.0;
 
     // ====== 你要自定义的：每个 phase 用哪些通道做区域平均 ======
+    // 注意：内部存的是 0-based index（用于 channelData[ch]）。GUI 显示/输入用 1-based。
     // phaseIndex==0: 来自老鼠A的感受电极( stream0 )，算 a/b 两条平均信号
-    const QVector<int> kSense_A_a = {1, 5, 7};  // A 的 a区：你自己改
-    const QVector<int> kSense_A_b = {9, 11, 15};  // A 的 b区：你自己改
+    QVector<int> kSense_A_a = {0, 4, 6};      // GUI 默认显示：1,5,7
+    QVector<int> kSense_A_b = {8, 10, 14};    // GUI 默认显示：9,11,15
 
     // phaseIndex==1: 来自老鼠B的感受电极( stream2 )，算 a'/b' 两条平均信号
-    const QVector<int> kSense_B_a = {1, 5, 7};   // B 的 a'区：你自己改
-    const QVector<int> kSense_B_b = {9, 11, 15}; // B 的 b'区：你自己改
+    QVector<int> kSense_B_a = {0, 4, 6};      // GUI 默认显示：1,5,7
+    QVector<int> kSense_B_b = {8, 10, 14};    // GUI 默认显示：9,11,15
 
     // ====== 你要自定义的：刺激电极名字（必须符合你 ElectrodeParameters 的命名规则）======
-    // 我先按你原来用过的 "A1"/"B1" 风格，扩展成两根：A1/A2, B1/B2
-    const QString kStim_A_a = "A2";  // 刺激老鼠A a区 的刺激电极
-    const QString kStim_A_b = "A7";  // 刺激老鼠A b区 的刺激电极
-    const QString kStim_B_a = "B2";  // 刺激老鼠B a'区 的刺激电极
-    const QString kStim_B_b = "B7";  // 刺激老鼠B b'区 的刺激电极
+    // 你说后面固定 A 开头 / B 开头，所以 GUI 里只编辑数字后缀
+    QString kStim_A_a = "A2";  // 刺激老鼠A a区 的刺激电极
+    QString kStim_A_b = "A7";  // 刺激老鼠A b区 的刺激电极
+    QString kStim_B_a = "B2";  // 刺激老鼠B a'区 的刺激电极
+    QString kStim_B_b = "B7";  // 刺激老鼠B b'区 的刺激电极
 
+    // ====== Electrode Config Dock (GUI widgets) ======
+    QDockWidget *m_dockElectrode = nullptr;
+
+    QLineEdit *m_editSense_A_a = nullptr;
+    QLineEdit *m_editSense_A_b = nullptr;
+    QLineEdit *m_editSense_B_a = nullptr;
+    QLineEdit *m_editSense_B_b = nullptr;
+
+    QSpinBox  *m_spinStim_A_a = nullptr;
+    QSpinBox  *m_spinStim_A_b = nullptr;
+    QSpinBox  *m_spinStim_B_a = nullptr;
+    QSpinBox  *m_spinStim_B_b = nullptr;
+
+    QPushButton *m_btnApplyElectrode = nullptr;
 
 };
