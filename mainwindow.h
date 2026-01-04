@@ -134,7 +134,7 @@ private:
     double m_maxWindowSec = 20.0;      // ring buffer 预留 20s
 
     // 拼写保留
-    double colletion_time = 5.0;
+    double colletion_time = 60.0;
 
     // ====== 你要自定义的：每个 phase 用哪些通道做区域平均 ======
     // 注意：内部存的是 0-based index（用于 channelData[ch]）。GUI 显示/输入用 1-based。

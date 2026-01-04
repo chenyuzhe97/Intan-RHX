@@ -21,6 +21,7 @@ public:
 
     void setEpochPlan(int epochId, int phaseIndex, double epochSec,
                       const QVector<Item> &items);
+    void setEpochSec(double epochSec);
 
     void markFired(int epochId, int itemIndex);
 

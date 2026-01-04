@@ -75,6 +75,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     // ===== timeline + stim csv =====
     m_timeline = new StimTimelineOverlay();
+    m_timeline->setEpochSec(colletion_time);
     m_timeline->show();
 
     m_stimLog = new StimLogWriter(this);

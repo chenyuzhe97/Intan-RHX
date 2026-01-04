@@ -9,6 +9,8 @@ StimTimelineOverlay::StimTimelineOverlay(QWidget *parent) : QWidget(parent)
     resize(520, 180);
 }
 
+
+
 void StimTimelineOverlay::setEpochPlan(int epochId, int phaseIndex, double epochSec,
                                        const QVector<Item> &items)
 {
@@ -17,6 +19,11 @@ void StimTimelineOverlay::setEpochPlan(int epochId, int phaseIndex, double epoch
     m_epochSec = qMax(0.1, epochSec);
     m_items = items;
     update();
+}
+
+void StimTimelineOverlay::setEpochSec(double epochSec)
+{
+    m_epochSec = epochSec;
 }
 
 void StimTimelineOverlay::markFired(int epochId, int itemIndex)
