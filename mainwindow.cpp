@@ -3,12 +3,17 @@
 #include <QFileDialog>
 #include <QDateTime>
 #include <QDir>
+
 #include <QSettings>
 #include <QDockWidget>
 #include <QGroupBox>
+#include <QHeaderView>
 #include <QFormLayout>
-#include <QLineEdit>
-#include <QSpinBox>
+#include <QTableWidget>
+#include <QToolButton>
+#include <QJsonDocument>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QMessageBox>
 #include <QRegularExpression>
 
@@ -44,6 +49,7 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setupUi();
 
+    // ===== electrode regions UI =====
     setupElectrodeConfigDock();
     loadElectrodeConfig();
 
@@ -360,14 +366,11 @@ QVector<int> MainWindow::meanSelectedChannels(const QVector<QVector<int> > &chan
     return out;
 }
 
-
 QString MainWindow::formatChannels1Based(const QVector<int> &zeroBased)
 {
     QStringList parts;
     parts.reserve(zeroBased.size());
-    for (int ch0 : zeroBased) {
-        parts << QString::number(ch0 + 1);
-    }
+    for (int ch0 : zeroBased) parts << QString::number(ch0 + 1);
     return parts.join(",");
 }
 
@@ -378,8 +381,6 @@ bool MainWindow::parseChannels1Based(const QString &text, QVector<int> &outZeroB
         if (err) *err = QStringLiteral("不能为空。示例：1,5,7");
         return false;
     }
-
-    // split by comma / space / semicolon
     const QRegularExpression re(QStringLiteral(R"([,\s;]+)"));
     const QStringList tokens = t.split(re, Qt::SkipEmptyParts);
 
@@ -409,194 +410,319 @@ bool MainWindow::parseChannels1Based(const QString &text, QVector<int> &outZeroB
     return true;
 }
 
+void MainWindow::addRegionRow(QTableWidget *table, const RegionConfig &cfg)
+{
+    const int row = table->rowCount();
+    table->insertRow(row);
+
+    auto *itemName = new QTableWidgetItem(cfg.name);
+    auto *itemSense = new QTableWidgetItem(formatChannels1Based(cfg.senseCh0));
+    auto *itemStim = new QTableWidgetItem(cfg.stimElectrode);
+
+    table->setItem(row, 0, itemName);
+    table->setItem(row, 1, itemSense);
+    table->setItem(row, 2, itemStim);
+}
+
+void MainWindow::writeRegionsToTable(QTableWidget *table, const QVector<RegionConfig> &regions)
+{
+    table->setRowCount(0);
+    for (const auto &r : regions) addRegionRow(table, r);
+    if (table->rowCount() == 0) table->setRowCount(0);
+}
+
+bool MainWindow::readRegionsFromTable(QTableWidget *table, QVector<RegionConfig> &out, QString *err) const
+{
+    out.clear();
+    const int rows = table->rowCount();
+    if (rows <= 0) {
+        if (err) *err = QStringLiteral("至少需要 1 行区域配置");
+        return false;
+    }
+
+    for (int i = 0; i < rows; ++i) {
+        RegionConfig r;
+        const QString name = table->item(i, 0) ? table->item(i, 0)->text().trimmed() : QString();
+        const QString senseTxt = table->item(i, 1) ? table->item(i, 1)->text().trimmed() : QString();
+        const QString stim = table->item(i, 2) ? table->item(i, 2)->text().trimmed() : QString();
+
+        r.name = name.isEmpty() ? QString("R%1").arg(i + 1) : name;
+
+        QString parseErr;
+        if (!parseChannels1Based(senseTxt, r.senseCh0, &parseErr)) {
+            if (err) *err = QStringLiteral("第 %1 行 Sense 通道列表错误：%2").arg(i + 1).arg(parseErr);
+            return false;
+        }
+
+        if (stim.isEmpty()) {
+            if (err) *err = QStringLiteral("第 %1 行 Stim 电极不能为空").arg(i + 1);
+            return false;
+        }
+        r.stimElectrode = stim;
+
+        out.push_back(r);
+    }
+
+    return true;
+}
+
+void MainWindow::moveSelectedRow(QTableWidget *table, int delta)
+{
+    const int row = table->currentRow();
+    if (row < 0) return;
+    const int newRow = row + delta;
+    if (newRow < 0 || newRow >= table->rowCount()) return;
+
+    // swap row contents
+    for (int col = 0; col < table->columnCount(); ++col) {
+        QTableWidgetItem *a = table->takeItem(row, col);
+        QTableWidgetItem *b = table->takeItem(newRow, col);
+        table->setItem(row, col, b);
+        table->setItem(newRow, col, a);
+    }
+    table->setCurrentCell(newRow, 0);
+}
+
+static QToolButton* makeMiniBtn(const QString &text, const QString &tip, QWidget *parent)
+{
+    auto *b = new QToolButton(parent);
+    b->setText(text);
+    b->setToolTip(tip);
+    b->setAutoRaise(true);
+    return b;
+}
+
 void MainWindow::setupElectrodeConfigDock()
 {
-    // Dock on the right
-    m_dockElectrode = new QDockWidget(tr("Electrode Config"), this);
-    m_dockElectrode->setObjectName("dockElectrodeConfig");
+    m_dockElectrode = new QDockWidget(tr("Electrode Regions"), this);
+    m_dockElectrode->setObjectName("dockElectrodeRegions");
 
     QWidget *panel = new QWidget(m_dockElectrode);
     QVBoxLayout *root = new QVBoxLayout(panel);
 
-    // ---- Sense group
-    QGroupBox *gbSense = new QGroupBox(tr("Sense channels (UI is 1-based, internal is 0-based)"), panel);
-    QFormLayout *senseLayout = new QFormLayout(gbSense);
-
-    m_editSense_A_a = new QLineEdit(gbSense);
-    m_editSense_A_b = new QLineEdit(gbSense);
-    m_editSense_B_a = new QLineEdit(gbSense);
-    m_editSense_B_b = new QLineEdit(gbSense);
-
-    m_editSense_A_a->setPlaceholderText("e.g. 1,5,7");
-    m_editSense_A_b->setPlaceholderText("e.g. 9,11,15");
-    m_editSense_B_a->setPlaceholderText("e.g. 1,5,7");
-    m_editSense_B_b->setPlaceholderText("e.g. 9,11,15");
-
-    senseLayout->addRow(tr("Mouse A: a (stream0)"), m_editSense_A_a);
-    senseLayout->addRow(tr("Mouse A: b (stream0)"), m_editSense_A_b);
-    senseLayout->addRow(tr("Mouse B: a' (stream2)"), m_editSense_B_a);
-    senseLayout->addRow(tr("Mouse B: b' (stream2)"), m_editSense_B_b);
-
-    // ---- Stim group
-    QGroupBox *gbStim = new QGroupBox(tr("Stim electrodes (prefix fixed A/B)"), panel);
-    QFormLayout *stimLayout = new QFormLayout(gbStim);
-
-    auto makeStimEditor = [&](const QString &prefix, QSpinBox *&spinOut) -> QWidget* {
-        QWidget *w = new QWidget(gbStim);
-        QHBoxLayout *hl = new QHBoxLayout(w);
-        hl->setContentsMargins(0,0,0,0);
-        QLabel *lab = new QLabel(prefix, w);
-        spinOut = new QSpinBox(w);
-        spinOut->setRange(1, 64); // TODO: 如果你的电极编号范围不是 1..64，自行改这里
-        spinOut->setSingleStep(1);
-        hl->addWidget(lab);
-        hl->addWidget(spinOut, 1);
-        w->setLayout(hl);
-        return w;
+    auto buildTable = [&](QTableWidget *&tableOut) -> QTableWidget* {
+        auto *t = new QTableWidget(panel);
+        t->setColumnCount(3);
+        t->setHorizontalHeaderLabels({tr("Region Name"), tr("Sense Channels (1-based)"), tr("Stim Electrode")});
+        t->horizontalHeader()->setStretchLastSection(true);
+        t->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+        t->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+        t->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+        t->setSelectionBehavior(QAbstractItemView::SelectRows);
+        t->setSelectionMode(QAbstractItemView::SingleSelection);
+        t->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed | QAbstractItemView::AnyKeyPressed);
+        tableOut = t;
+        return t;
     };
 
-    stimLayout->addRow(tr("Stim A a:"),  makeStimEditor("A", m_spinStim_A_a));
-    stimLayout->addRow(tr("Stim A b:"),  makeStimEditor("A", m_spinStim_A_b));
-    stimLayout->addRow(tr("Stim B a':"), makeStimEditor("B", m_spinStim_B_a));
-    stimLayout->addRow(tr("Stim B b':"), makeStimEditor("B", m_spinStim_B_b));
+    // ---- Phase0 group
+    QGroupBox *g0 = new QGroupBox(tr("PhaseA: sense Mouse A (stream0)  → stimulate Mouse B"), panel);
+    QVBoxLayout *g0v = new QVBoxLayout(g0);
 
-    // ---- Apply button
+    m_tablePhase0 = buildTable(m_tablePhase0);
+    g0v->addWidget(m_tablePhase0);
+
+    QHBoxLayout *b0 = new QHBoxLayout();
+    m_btnAdd0  = makeMiniBtn("+", tr("Add region"), g0);
+    m_btnDel0  = makeMiniBtn("-", tr("Remove selected region"), g0);
+    m_btnUp0   = makeMiniBtn("↑", tr("Move up"), g0);
+    m_btnDown0 = makeMiniBtn("↓", tr("Move down"), g0);
+    b0->addWidget(m_btnAdd0);
+    b0->addWidget(m_btnDel0);
+    b0->addWidget(m_btnUp0);
+    b0->addWidget(m_btnDown0);
+    b0->addStretch(1);
+    g0v->addLayout(b0);
+
+    // ---- Phase1 group
+    QGroupBox *g1 = new QGroupBox(tr("PhaseB: sense Mouse B (stream2)  → stimulate Mouse A"), panel);
+    QVBoxLayout *g1v = new QVBoxLayout(g1);
+
+    m_tablePhase1 = buildTable(m_tablePhase1);
+    g1v->addWidget(m_tablePhase1);
+
+    QHBoxLayout *b1 = new QHBoxLayout();
+    m_btnAdd1  = makeMiniBtn("+", tr("Add region"), g1);
+    m_btnDel1  = makeMiniBtn("-", tr("Remove selected region"), g1);
+    m_btnUp1   = makeMiniBtn("↑", tr("Move up"), g1);
+    m_btnDown1 = makeMiniBtn("↓", tr("Move down"), g1);
+    b1->addWidget(m_btnAdd1);
+    b1->addWidget(m_btnDel1);
+    b1->addWidget(m_btnUp1);
+    b1->addWidget(m_btnDown1);
+    b1->addStretch(1);
+    g1v->addLayout(b1);
+
+    // ---- Apply
     m_btnApplyElectrode = new QPushButton(tr("Apply"), panel);
 
-    root->addWidget(gbSense);
-    root->addWidget(gbStim);
+    root->addWidget(g0);
+    root->addWidget(g1);
     root->addWidget(m_btnApplyElectrode);
     root->addStretch(1);
 
     panel->setLayout(root);
     m_dockElectrode->setWidget(panel);
-
     addDockWidget(Qt::RightDockWidgetArea, m_dockElectrode);
 
-    connect(m_btnApplyElectrode, &QPushButton::clicked,
-            this, &MainWindow::applyElectrodeConfigFromUi);
+    connect(m_btnApplyElectrode, &QPushButton::clicked, this, &MainWindow::applyElectrodeConfigFromUi);
 
-    // 初始化 UI 为当前默认值
-    m_editSense_A_a->setText(formatChannels1Based(kSense_A_a));
-    m_editSense_A_b->setText(formatChannels1Based(kSense_A_b));
-    m_editSense_B_a->setText(formatChannels1Based(kSense_B_a));
-    m_editSense_B_b->setText(formatChannels1Based(kSense_B_b));
+    connect(m_btnAdd0,  &QToolButton::clicked, this, &MainWindow::addRegionPhase0);
+    connect(m_btnDel0,  &QToolButton::clicked, this, &MainWindow::removeRegionPhase0);
+    connect(m_btnUp0,   &QToolButton::clicked, this, &MainWindow::moveUpPhase0);
+    connect(m_btnDown0, &QToolButton::clicked, this, &MainWindow::moveDownPhase0);
 
-    auto parseSuffix = [](const QString &name, const QChar expectedPrefix, int fallback) -> int {
-        if (name.size() >= 2 && name[0] == expectedPrefix) {
-            bool ok = false;
-            const int n = name.mid(1).toInt(&ok);
-            if (ok && n > 0) return n;
+    connect(m_btnAdd1,  &QToolButton::clicked, this, &MainWindow::addRegionPhase1);
+    connect(m_btnDel1,  &QToolButton::clicked, this, &MainWindow::removeRegionPhase1);
+    connect(m_btnUp1,   &QToolButton::clicked, this, &MainWindow::moveUpPhase1);
+    connect(m_btnDown1, &QToolButton::clicked, this, &MainWindow::moveDownPhase1);
+}
+
+static QJsonArray regionsToJson(const QVector<MainWindow::RegionConfig> &regions)
+{
+    QJsonArray arr;
+    for (const auto &r : regions) {
+        QJsonObject o;
+        o["name"] = r.name;
+        o["sense"] = MainWindow::formatChannels1Based(r.senseCh0); // store as 1-based string
+        o["stim"] = r.stimElectrode;
+        arr.append(o);
+    }
+    return arr;
+}
+
+static QVector<MainWindow::RegionConfig> regionsFromJson(const QJsonArray &arr)
+{
+    QVector<MainWindow::RegionConfig> out;
+    out.reserve(arr.size());
+    for (const auto &v : arr) {
+        if (!v.isObject()) continue;
+        const QJsonObject o = v.toObject();
+        MainWindow::RegionConfig r;
+        r.name = o.value("name").toString();
+        const QString senseTxt = o.value("sense").toString();
+        QString err;
+        if (!MainWindow::parseChannels1Based(senseTxt, r.senseCh0, &err)) {
+            // skip invalid row
+            continue;
         }
-        return fallback;
-    };
-
-    m_spinStim_A_a->setValue(parseSuffix(kStim_A_a, QChar('A'), 2));
-    m_spinStim_A_b->setValue(parseSuffix(kStim_A_b, QChar('A'), 7));
-    m_spinStim_B_a->setValue(parseSuffix(kStim_B_a, QChar('B'), 2));
-    m_spinStim_B_b->setValue(parseSuffix(kStim_B_b, QChar('B'), 7));
+        r.stimElectrode = o.value("stim").toString();
+        if (r.stimElectrode.trimmed().isEmpty()) continue;
+        if (r.name.trimmed().isEmpty()) r.name = QString("R%1").arg(out.size() + 1);
+        out.push_back(r);
+    }
+    return out;
 }
 
 void MainWindow::loadElectrodeConfig()
 {
-    if (!m_dockElectrode) return;
+    // default: 2 regions like your old a/b
+    if (m_regionsPhase0.isEmpty()) {
+        m_regionsPhase0 = {
+                           {"A_a", {0,1,2}, "B1"},
+                           {"A_b", {3,4,5}, "B2"},
+                           };
+    }
+    if (m_regionsPhase1.isEmpty()) {
+        m_regionsPhase1 = {
+                           {"B_a", {0,1,2}, "A1"},
+                           {"B_b", {3,4,5}, "A2"},
+                           };
+    }
 
     QSettings s;
+    const QByteArray j0 = s.value("electrode/regions_phase0").toByteArray();
+    const QByteArray j1 = s.value("electrode/regions_phase1").toByteArray();
 
-    // Sense texts are stored as 1-based string like "1,5,7"
-    const QString tA_a = s.value("electrode/sense_A_a", m_editSense_A_a->text()).toString();
-    const QString tA_b = s.value("electrode/sense_A_b", m_editSense_A_b->text()).toString();
-    const QString tB_a = s.value("electrode/sense_B_a", m_editSense_B_a->text()).toString();
-    const QString tB_b = s.value("electrode/sense_B_b", m_editSense_B_b->text()).toString();
+    if (!j0.isEmpty()) {
+        const QJsonDocument doc = QJsonDocument::fromJson(j0);
+        if (doc.isArray()) {
+            auto regs = regionsFromJson(doc.array());
+            if (!regs.isEmpty()) m_regionsPhase0 = regs;
+        }
+    }
 
-    m_editSense_A_a->setText(tA_a);
-    m_editSense_A_b->setText(tA_b);
-    m_editSense_B_a->setText(tB_a);
-    m_editSense_B_b->setText(tB_b);
+    if (!j1.isEmpty()) {
+        const QJsonDocument doc = QJsonDocument::fromJson(j1);
+        if (doc.isArray()) {
+            auto regs = regionsFromJson(doc.array());
+            if (!regs.isEmpty()) m_regionsPhase1 = regs;
+        }
+    }
 
-    // Stim numbers
-    m_spinStim_A_a->setValue(s.value("electrode/stim_A_a_num", m_spinStim_A_a->value()).toInt());
-    m_spinStim_A_b->setValue(s.value("electrode/stim_A_b_num", m_spinStim_A_b->value()).toInt());
-    m_spinStim_B_a->setValue(s.value("electrode/stim_B_a_num", m_spinStim_B_a->value()).toInt());
-    m_spinStim_B_b->setValue(s.value("electrode/stim_B_b_num", m_spinStim_B_b->value()).toInt());
-
-    // Apply to members (silent, invalid string -> keep old defaults)
-    QString err;
-    QVector<int> tmp;
-
-    if (parseChannels1Based(m_editSense_A_a->text(), tmp, &err)) kSense_A_a = tmp;
-    if (parseChannels1Based(m_editSense_A_b->text(), tmp, &err)) kSense_A_b = tmp;
-    if (parseChannels1Based(m_editSense_B_a->text(), tmp, &err)) kSense_B_a = tmp;
-    if (parseChannels1Based(m_editSense_B_b->text(), tmp, &err)) kSense_B_b = tmp;
-
-    kStim_A_a = QString("A%1").arg(m_spinStim_A_a->value());
-    kStim_A_b = QString("A%1").arg(m_spinStim_A_b->value());
-    kStim_B_a = QString("B%1").arg(m_spinStim_B_a->value());
-    kStim_B_b = QString("B%1").arg(m_spinStim_B_b->value());
+    if (m_tablePhase0) writeRegionsToTable(m_tablePhase0, m_regionsPhase0);
+    if (m_tablePhase1) writeRegionsToTable(m_tablePhase1, m_regionsPhase1);
 }
 
 void MainWindow::saveElectrodeConfig() const
 {
-    if (!m_dockElectrode) return;
-
     QSettings s;
-    s.setValue("electrode/sense_A_a", m_editSense_A_a->text().trimmed());
-    s.setValue("electrode/sense_A_b", m_editSense_A_b->text().trimmed());
-    s.setValue("electrode/sense_B_a", m_editSense_B_a->text().trimmed());
-    s.setValue("electrode/sense_B_b", m_editSense_B_b->text().trimmed());
-
-    s.setValue("electrode/stim_A_a_num", m_spinStim_A_a->value());
-    s.setValue("electrode/stim_A_b_num", m_spinStim_A_b->value());
-    s.setValue("electrode/stim_B_a_num", m_spinStim_B_a->value());
-    s.setValue("electrode/stim_B_b_num", m_spinStim_B_b->value());
+    s.setValue("electrode/regions_phase0", QJsonDocument(regionsToJson(m_regionsPhase0)).toJson(QJsonDocument::Compact));
+    s.setValue("electrode/regions_phase1", QJsonDocument(regionsToJson(m_regionsPhase1)).toJson(QJsonDocument::Compact));
 }
 
 void MainWindow::applyElectrodeConfigFromUi()
 {
     QString err;
-    QVector<int> tmp;
+    QVector<RegionConfig> r0, r1;
 
-    if (!parseChannels1Based(m_editSense_A_a->text(), tmp, &err)) {
-        QMessageBox::warning(this, tr("Invalid A a sense list"), err);
+    if (!readRegionsFromTable(m_tablePhase0, r0, &err)) {
+        QMessageBox::warning(this, tr("Invalid PhaseA regions"), err);
         return;
     }
-    kSense_A_a = tmp;
-
-    if (!parseChannels1Based(m_editSense_A_b->text(), tmp, &err)) {
-        QMessageBox::warning(this, tr("Invalid A b sense list"), err);
+    if (!readRegionsFromTable(m_tablePhase1, r1, &err)) {
+        QMessageBox::warning(this, tr("Invalid PhaseB regions"), err);
         return;
     }
-    kSense_A_b = tmp;
 
-    if (!parseChannels1Based(m_editSense_B_a->text(), tmp, &err)) {
-        QMessageBox::warning(this, tr("Invalid B a' sense list"), err);
-        return;
-    }
-    kSense_B_a = tmp;
-
-    if (!parseChannels1Based(m_editSense_B_b->text(), tmp, &err)) {
-        QMessageBox::warning(this, tr("Invalid B b' sense list"), err);
-        return;
-    }
-    kSense_B_b = tmp;
-
-    // Stim strings
-    kStim_A_a = QString("A%1").arg(m_spinStim_A_a->value());
-    kStim_A_b = QString("A%1").arg(m_spinStim_A_b->value());
-    kStim_B_a = QString("B%1").arg(m_spinStim_B_a->value());
-    kStim_B_b = QString("B%1").arg(m_spinStim_B_b->value());
-
+    m_regionsPhase0 = r0;
+    m_regionsPhase1 = r1;
     saveElectrodeConfig();
 
-    appendLog(QString("ElectrodeConfig applied. "
-                      "SenseA(a)=[%1] SenseA(b)=[%2] SenseB(a')=[%3] SenseB(b')=[%4]; "
-                      "StimA(a)=%5 StimA(b)=%6 StimB(a')=%7 StimB(b')=%8")
-                  .arg(formatChannels1Based(kSense_A_a))
-                  .arg(formatChannels1Based(kSense_A_b))
-                  .arg(formatChannels1Based(kSense_B_a))
-                  .arg(formatChannels1Based(kSense_B_b))
-                  .arg(kStim_A_a).arg(kStim_A_b).arg(kStim_B_a).arg(kStim_B_b));
+    appendLog(QString("Electrode regions applied. PhaseA regions=%1, PhaseB regions=%2")
+                  .arg(m_regionsPhase0.size()).arg(m_regionsPhase1.size()));
 }
+
+void MainWindow::addRegionPhase0()
+{
+    RegionConfig cfg;
+    cfg.name = QString("A_R%1").arg(m_tablePhase0->rowCount() + 1);
+    cfg.senseCh0 = {0};
+    cfg.stimElectrode = "B1";
+    addRegionRow(m_tablePhase0, cfg);
+}
+
+void MainWindow::removeRegionPhase0()
+{
+    const int r = m_tablePhase0->currentRow();
+    if (r < 0) return;
+    m_tablePhase0->removeRow(r);
+}
+
+void MainWindow::moveUpPhase0()   { moveSelectedRow(m_tablePhase0, -1); }
+void MainWindow::moveDownPhase0() { moveSelectedRow(m_tablePhase0, +1); }
+
+void MainWindow::addRegionPhase1()
+{
+    RegionConfig cfg;
+    cfg.name = QString("B_R%1").arg(m_tablePhase1->rowCount() + 1);
+    cfg.senseCh0 = {0};
+    cfg.stimElectrode = "A1";
+    addRegionRow(m_tablePhase1, cfg);
+}
+
+void MainWindow::removeRegionPhase1()
+{
+    const int r = m_tablePhase1->currentRow();
+    if (r < 0) return;
+    m_tablePhase1->removeRow(r);
+}
+
+void MainWindow::moveUpPhase1()   { moveSelectedRow(m_tablePhase1, -1); }
+void MainWindow::moveDownPhase1() { moveSelectedRow(m_tablePhase1, +1); }
+
+
+
 void MainWindow::applyDspSettings()
 {
     if (!m_viewA || !m_viewB) return;
@@ -749,24 +875,29 @@ void MainWindow::onABEpochReady(int phaseIndex,
     if (!m_abAlgo || !m_engine) return;
     if (timeStamps.isEmpty() || channelData.isEmpty()) return;
 
-    // 1) 按 phase 选择通道列表，算两条平均信号：avg[0]=a区，avg[1]=b区
-    const QVector<int> &sel_a = (phaseIndex == 0) ? kSense_A_a : kSense_B_a;
-    const QVector<int> &sel_b = (phaseIndex == 0) ? kSense_A_b : kSense_B_b;
-
-    QVector<int> avg_a = meanSelectedChannels(channelData, sel_a);
-    QVector<int> avg_b = meanSelectedChannels(channelData, sel_b);
-
-    if (avg_a.isEmpty() || avg_b.isEmpty() || avg_a.size() != timeStamps.size() || avg_b.size() != timeStamps.size()) {
-        appendLog(phaseName + ": 平均信号生成失败（通道列表/数据长度不匹配）");
+    // 0) 选择本 phase 的区域列表（支持任意数量，不再强制 2 对 2）
+    const QVector<RegionConfig> &regions = (phaseIndex == 0) ? m_regionsPhase0 : m_regionsPhase1;
+    if (regions.isEmpty()) {
+        appendLog(phaseName + ": 区域列表为空，请在右侧 Electrode Regions 里配置至少 1 行并 Apply");
         return;
     }
 
+    // 1) 按区域列表，生成 N 路平均信号 avgChannelData[i]
     QVector<QVector<int>> avgChannelData;
-    avgChannelData.reserve(2);
-    avgChannelData.push_back(avg_a); // chIndex=0 -> a区平均
-    avgChannelData.push_back(avg_b); // chIndex=1 -> b区平均
+    avgChannelData.reserve(regions.size());
 
-    // 2) 把“2路平均信号”送进你现有算法（算法不用改，仍然做滤波+尖峰检测）
+    for (int i = 0; i < regions.size(); ++i) {
+        const auto &reg = regions[i];
+        QVector<int> avg = meanSelectedChannels(channelData, reg.senseCh0);
+        if (avg.isEmpty() || avg.size() != timeStamps.size()) {
+            appendLog(QString("%1: 区域[%2] 平均信号生成失败（通道列表/数据长度不匹配）")
+                          .arg(phaseName).arg(reg.name));
+            return;
+        }
+        avgChannelData.push_back(avg);
+    }
+
+    // 2) 把“多路平均信号”送进算法（ABAlgorithm 需要支持 channelData.size() 可变）
     const QVector<ABAlgorithm::Result> allResults =
         m_abAlgo->analyzeEpoch(phaseIndex, timeStamps, avgChannelData);
 
@@ -775,28 +906,20 @@ void MainWindow::onABEpochReady(int phaseIndex,
         return;
     }
 
-    // 3) phase->triggerSource 不变：你说“配置24/25，触发0/1”，那这里继续沿用
-    //    仍然：PhaseA 刺激老鼠B 用 triggerSource=1；PhaseB 刺激老鼠A 用 triggerSource=0
+    // 3) phase->triggerSource 不变：PhaseA 刺激老鼠B 用 triggerSource=1；PhaseB 刺激老鼠A 用 triggerSource=0
     const int triggerSource = (phaseIndex == 0) ? 1 : 0;
-
-    // 4) 按 a/b 区域决定刺激电极名字（关键：一条平均信号对应一根刺激电极）
-    auto electrodeForAvgIndex = [&](int avgIndex) -> QString {
-        if (phaseIndex == 0) { // A -> 刺激 B
-            return (avgIndex == 0) ? kStim_B_a : kStim_B_b;
-        } else {               // B -> 刺激 A
-            return (avgIndex == 0) ? kStim_A_a : kStim_A_b;
-        }
-    };
 
     const uint32_t epochStartTs = timeStamps.first();
     const double fs = (m_sampleRate > 0.0 ? m_sampleRate : 30000.0);
 
-    // 5) 只保留需要刺激的候选
+    // 4) 只保留需要刺激的候选
     QVector<ABAlgorithm::Result> candidates;
     candidates.reserve(allResults.size());
     for (const auto &r : allResults) {
         if (!r.needStim) continue;
         if (r.suggestedAmplitude_uA <= 0) continue;
+        // r.channelIndex 代表 avgChannelData 的索引，也就是 regions 的索引
+        if (r.channelIndex < 0 || r.channelIndex >= regions.size()) continue;
         candidates.push_back(r);
     }
     if (candidates.isEmpty()) {
@@ -826,7 +949,7 @@ void MainWindow::onABEpochReady(int phaseIndex,
     for (int i = 0; i < candidates.size(); ++i) {
         const auto &r = candidates[i];
 
-        const QString targetElectrode = electrodeForAvgIndex(r.channelIndex); // 0->a区电极, 1->b区电极
+        const QString targetElectrode = regions[r.channelIndex].stimElectrode;
 
         int pulses = (r.suggestedNumPulses > 0) ? r.suggestedNumPulses : 1;
 
@@ -841,9 +964,9 @@ void MainWindow::onABEpochReady(int phaseIndex,
         it.offsetMs = offsetMs;
         it.amp_uA = r.suggestedAmplitude_uA;
         it.pulses = pulses;
-        it.ch = r.channelIndex;          // 这里现在是 0/1，代表 a平均/b平均
+        it.ch = r.channelIndex;          // 现在是 0..(regions.size()-1)
         it.spike_uV = r.spikeAmplitude_uV;
-        it.electrode = targetElectrode;  // 关键：每条事件写入对应的刺激电极
+        it.electrode = targetElectrode;
         it.fired = false;
         items.push_back(it);
 
@@ -868,8 +991,8 @@ void MainWindow::onABEpochReady(int phaseIndex,
         ensureTimelineVisible();
     }
 
-    appendLog(QString("%1: epochId=%2 计划刺激=%3")
-                  .arg(phaseName).arg(epochId).arg(items.size()));
+    appendLog(QString("%1: epochId=%2 计划刺激=%3 (regions=%4)")
+                  .arg(phaseName).arg(epochId).arg(items.size()).arg(regions.size()));
 }
 
 

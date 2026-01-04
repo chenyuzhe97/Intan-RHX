@@ -13,8 +13,10 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDockWidget>
-#include <QLineEdit>
-#include <QSpinBox>
+#include <QTableWidget>
+#include <QToolButton>
+#include <QJsonArray>
+#include <QJsonObject>
 
 #include "acquisitionengine.h"
 #include "abalgorithm.h"
@@ -32,6 +34,20 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
+
+public:
+    // ===== Electrode config (flex regions) =====
+    struct RegionConfig {
+        QString name;              // label
+        QVector<int> senseCh0;      // 0-based indices
+        QString stimElectrode;      // electrode name string
+    };
+
+    static bool parseChannels1Based(const QString &text, QVector<int> &outZeroBased, QString *err = nullptr);
+    static QString formatChannels1Based(const QVector<int> &zeroBased);
+
+
+
 private slots:
     void onOpenDevice();
     void onStart();
@@ -48,8 +64,16 @@ private slots:
     void applyDspSettings();
     void onToggleFftWindows();
 
-    // Electrode config dock
+    // Electrode regions (flex)
     void applyElectrodeConfigFromUi();
+    void addRegionPhase0();
+    void removeRegionPhase0();
+    void moveUpPhase0();
+    void moveDownPhase0();
+    void addRegionPhase1();
+    void removeRegionPhase1();
+    void moveUpPhase1();
+    void moveDownPhase1();
 
     void onABEpochReady(int phaseIndex,
                         const QVector<uint32_t> &timeStamps,
@@ -66,13 +90,17 @@ private:
     QVector<int> meanSelectedChannels(const QVector<QVector<int>> &channelData,
                                       const QVector<int> &sel);
 
-    // ===== Electrode config (GUI) =====
+
+
     void setupElectrodeConfigDock();
     void loadElectrodeConfig();
     void saveElectrodeConfig() const;
 
-    static QString formatChannels1Based(const QVector<int> &zeroBased);
-    static bool parseChannels1Based(const QString &text, QVector<int> &outZeroBased, QString *err = nullptr);
+
+    void writeRegionsToTable(QTableWidget *table, const QVector<RegionConfig> &regions);
+    bool readRegionsFromTable(QTableWidget *table, QVector<RegionConfig> &out, QString *err) const;
+    void addRegionRow(QTableWidget *table, const RegionConfig &cfg);
+    void moveSelectedRow(QTableWidget *table, int delta);
 
 private:
     QWidget        *m_central = nullptr;
@@ -135,36 +163,27 @@ private:
 
     // 拼写保留
     double colletion_time = 60.0;
+    // ====== region configs ======
+    // phaseIndex==0: sense from Mouse A (stream0) -> stimulate Mouse B electrodes
+    QVector<RegionConfig> m_regionsPhase0;
 
-    // ====== 你要自定义的：每个 phase 用哪些通道做区域平均 ======
-    // 注意：内部存的是 0-based index（用于 channelData[ch]）。GUI 显示/输入用 1-based。
-    // phaseIndex==0: 来自老鼠A的感受电极( stream0 )，算 a/b 两条平均信号
-    QVector<int> kSense_A_a = {0, 4, 6};      // GUI 默认显示：1,5,7
-    QVector<int> kSense_A_b = {8, 10, 14};    // GUI 默认显示：9,11,15
+    // phaseIndex==1: sense from Mouse B (stream2) -> stimulate Mouse A electrodes
+    QVector<RegionConfig> m_regionsPhase1;
 
-    // phaseIndex==1: 来自老鼠B的感受电极( stream2 )，算 a'/b' 两条平均信号
-    QVector<int> kSense_B_a = {0, 4, 6};      // GUI 默认显示：1,5,7
-    QVector<int> kSense_B_b = {8, 10, 14};    // GUI 默认显示：9,11,15
-
-    // ====== 你要自定义的：刺激电极名字（必须符合你 ElectrodeParameters 的命名规则）======
-    // 你说后面固定 A 开头 / B 开头，所以 GUI 里只编辑数字后缀
-    QString kStim_A_a = "A2";  // 刺激老鼠A a区 的刺激电极
-    QString kStim_A_b = "A7";  // 刺激老鼠A b区 的刺激电极
-    QString kStim_B_a = "B2";  // 刺激老鼠B a'区 的刺激电极
-    QString kStim_B_b = "B7";  // 刺激老鼠B b'区 的刺激电极
-
-    // ====== Electrode Config Dock (GUI widgets) ======
+    // ===== Electrode Config Dock UI =====
     QDockWidget *m_dockElectrode = nullptr;
 
-    QLineEdit *m_editSense_A_a = nullptr;
-    QLineEdit *m_editSense_A_b = nullptr;
-    QLineEdit *m_editSense_B_a = nullptr;
-    QLineEdit *m_editSense_B_b = nullptr;
+    QTableWidget *m_tablePhase0 = nullptr;
+    QToolButton  *m_btnAdd0 = nullptr;
+    QToolButton  *m_btnDel0 = nullptr;
+    QToolButton  *m_btnUp0  = nullptr;
+    QToolButton  *m_btnDown0= nullptr;
 
-    QSpinBox  *m_spinStim_A_a = nullptr;
-    QSpinBox  *m_spinStim_A_b = nullptr;
-    QSpinBox  *m_spinStim_B_a = nullptr;
-    QSpinBox  *m_spinStim_B_b = nullptr;
+    QTableWidget *m_tablePhase1 = nullptr;
+    QToolButton  *m_btnAdd1 = nullptr;
+    QToolButton  *m_btnDel1 = nullptr;
+    QToolButton  *m_btnUp1  = nullptr;
+    QToolButton  *m_btnDown1= nullptr;
 
     QPushButton *m_btnApplyElectrode = nullptr;
 
