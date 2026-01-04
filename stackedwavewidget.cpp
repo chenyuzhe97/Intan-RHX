@@ -12,6 +12,7 @@ StackedWaveWidget::StackedWaveWidget(QWidget *parent) : QWidget(parent)
     setMouseTracking(true);
 
     m_repaint.setInterval(33); // ~30 fps
+    // 每33ms 触发一次，触发重载后的update代码
     connect(&m_repaint, &QTimer::timeout, this, QOverload<>::of(&StackedWaveWidget::update));
     m_repaint.start();
 }
@@ -27,7 +28,10 @@ void StackedWaveWidget::configure(int channels, double sampleRateHz, double wind
 
     m_bqNotch.resize(m_channels);
     m_bqMain.resize(m_channels);
-    for (int ch=0; ch<m_channels; ++ch) { m_bqNotch[ch].reset(); m_bqMain[ch].reset(); }
+    for (int ch=0; ch<m_channels; ++ch) {
+        m_bqNotch[ch].reset();
+        m_bqMain[ch].reset();
+    }
 
     // 预分配足够的 ring buffer 容量（允许你 Ctrl+滚轮 放大时间窗）
     const int cap = qMax(2048, int(qCeil((m_windowSecMax + 0.5) * m_fs)));

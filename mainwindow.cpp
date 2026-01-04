@@ -200,8 +200,8 @@ void MainWindow::setupUi()
         m_chkNotch->setChecked(false);
 
         m_cmbNotchHz = new QComboBox(this);
-        m_cmbNotchHz->addItems({"50","60"});
-        m_cmbNotchHz->setCurrentText("50");
+        m_cmbNotchHz->addItems({"50Hz","60Hz"});
+        m_cmbNotchHz->setCurrentText("50Hz");
 
         m_spNotchQ = new QDoubleSpinBox(this);
         m_spNotchQ->setRange(5.0, 200.0);
@@ -319,6 +319,33 @@ void MainWindow::ensureFftVisible()
     if (m_fftB) m_fftB->move(g.topLeft() + QPoint(20, 380));
     if (m_fftA) m_fftA->raise();
     if (m_fftB) m_fftB->raise();
+}
+
+QVector<int> MainWindow::meanSelectedChannels(const QVector<QVector<int> > &channelData, const QVector<int> &sel)
+{
+    if (channelData.isEmpty() || sel.isEmpty()) return {};
+
+    // 以第0通道长度作为基准（你这套采集一般各通道等长）
+    const int N = channelData[0].size();
+    if (N <= 0) return {};
+
+    QVector<int> out;
+    out.resize(N);
+
+    for (int i = 0; i < N; ++i) {
+        long long sum = 0;
+        int used = 0;
+        for (int ch : sel) {
+            if (ch < 0 || ch >= channelData.size()) continue;
+            const auto &v = channelData[ch];
+            if (i < 0 || i >= v.size()) continue;
+            sum += (long long)v[i];
+            used++;
+        }
+        if (used == 0) return {}; // sel 全无效就直接失败
+        out[i] = (int)std::llround((double)sum / (double)used);
+    }
+    return out;
 }
 
 void MainWindow::applyDspSettings()
@@ -471,59 +498,103 @@ void MainWindow::onABEpochReady(int phaseIndex,
     if (!m_abAlgo || !m_engine) return;
     if (timeStamps.isEmpty() || channelData.isEmpty()) return;
 
+    // ===== 1) 先按通道列表把 16ch -> 2ch（a平均/b平均）=====
+    const QVector<int> &sel_a = (phaseIndex == 0) ? kSense_A_a : kSense_B_a;
+    const QVector<int> &sel_b = (phaseIndex == 0) ? kSense_A_b : kSense_B_b;
+
+    QVector<int> avg_a = meanSelectedChannels(channelData, sel_a);
+    QVector<int> avg_b = meanSelectedChannels(channelData, sel_b);
+
+    if (avg_a.isEmpty() || avg_b.isEmpty() ||
+        avg_a.size() != timeStamps.size() || avg_b.size() != timeStamps.size()) {
+        appendLog(phaseName + ": 平均信号生成失败（通道列表无效或长度不匹配）");
+        return;
+    }
+
+    QVector<QVector<int>> avgChannelData;
+    avgChannelData.reserve(2);
+    avgChannelData.push_back(avg_a); // channelIndex=0 -> a区
+    avgChannelData.push_back(avg_b); // channelIndex=1 -> b区
+
+    // ===== 2) 关键：把 a/b 两路分别送进算法 =====
     const QVector<ABAlgorithm::Result> allResults =
-        m_abAlgo->analyzeEpoch(phaseIndex, timeStamps, channelData);
+        m_abAlgo->analyzeEpoch(phaseIndex, timeStamps, avgChannelData);
 
     if (allResults.isEmpty()) {
         appendLog(phaseName + ": 本 epoch 未检测到事件");
         return;
     }
 
-    QString targetElectrode;
-    int triggerSource = 0;
-    if (phaseIndex == 0) { targetElectrode = "B1"; triggerSource = 1; }
-    else { targetElectrode = "A1"; triggerSource = 0; }
+    // ===== 3) Phase 决定刺激对象；保持你现有“配置24/25，触发0/1”的体系不改 =====
+    // PhaseA：刺激老鼠B；PhaseB：刺激老鼠A
+    const int triggerSource = (phaseIndex == 0) ? 1 : 0;
 
-    const uint32_t epochStartTs = timeStamps.first();
-    const double fs = (m_sampleRate > 0.0 ? m_sampleRate : 30000.0);
+    auto electrodeForRegion = [&](int regionIdx /*0=a, 1=b*/) -> QString {
+        if (phaseIndex == 0) { // A -> B
+            return (regionIdx == 0) ? kStim_B_a : kStim_B_b;
+        } else {               // B -> A
+            return (regionIdx == 0) ? kStim_A_a : kStim_A_b;
+        }
+    };
 
-    QVector<ABAlgorithm::Result> candidates;
-    candidates.reserve(allResults.size());
+    // ===== 4) 每路各取最多10个（你要的重点）=====
+    QVector<ABAlgorithm::Result> candA; // channelIndex==0 (a平均)
+    QVector<ABAlgorithm::Result> candB; // channelIndex==1 (b平均)
+
     for (const auto &r : allResults) {
         if (!r.needStim) continue;
         if (r.suggestedAmplitude_uA <= 0) continue;
-        candidates.push_back(r);
+        if (r.channelIndex == 0) candA.push_back(r);
+        else if (r.channelIndex == 1) candB.push_back(r);
     }
-    if (candidates.isEmpty()) {
+
+    if (candA.isEmpty() && candB.isEmpty()) {
         appendLog(phaseName + ": 无需刺激");
         return;
     }
 
-    // 强度最大 10 个
-    std::sort(candidates.begin(), candidates.end(),
-              [](const ABAlgorithm::Result &a, const ABAlgorithm::Result &b) {
-                  return a.spikeAmplitude_uV > b.spikeAmplitude_uV;
-              });
-    const int maxStimPerEpoch = 10;
-    if (candidates.size() > maxStimPerEpoch) candidates.resize(maxStimPerEpoch);
+    auto topKByAmp = [](QVector<ABAlgorithm::Result> &v, int k) {
+        std::sort(v.begin(), v.end(),
+                  [](const ABAlgorithm::Result &a, const ABAlgorithm::Result &b) {
+                      return a.spikeAmplitude_uV > b.spikeAmplitude_uV;
+                  });
+        if (v.size() > k) v.resize(k);
+    };
 
-    // 按时间排序
+    const int maxPerRegion = 10;
+    topKByAmp(candA, maxPerRegion);
+    topKByAmp(candB, maxPerRegion);
+
+    QVector<ABAlgorithm::Result> candidates = candA;
+    candidates += candB;
+
+    // 合并后按时间排序：按你说的“时间顺序依次触发”
     std::sort(candidates.begin(), candidates.end(),
               [](const ABAlgorithm::Result &a, const ABAlgorithm::Result &b) {
                   return a.triggerTime < b.triggerTime;
               });
+
+    // ===== 5) 生成计划 + singleShot 触发 =====
+    const uint32_t epochStartTs = timeStamps.first();
+    const double fs = (m_sampleRate > 0.0 ? m_sampleRate : 30000.0);
 
     const int epochId = ++m_epochCounter;
 
     QVector<StimTimelineOverlay::Item> items;
     items.reserve(candidates.size());
 
-    for (int i=0; i<candidates.size(); ++i) {
-        const auto r = candidates[i];
+    for (int i = 0; i < candidates.size(); ++i) {
+        const auto &r = candidates[i];
+
+        const int regionIdx = (r.channelIndex == 0) ? 0 : 1; // 0=a, 1=b
+        const QString targetElectrode = electrodeForRegion(regionIdx);
 
         int pulses = (r.suggestedNumPulses > 0) ? r.suggestedNumPulses : 1;
+
         double offsetSec = 0.0;
-        if (r.triggerTime >= epochStartTs) offsetSec = double(r.triggerTime - epochStartTs) / fs;
+        if (r.triggerTime >= epochStartTs)
+            offsetSec = double(r.triggerTime - epochStartTs) / fs;
+
         const double offsetMs = offsetSec * 1000.0;
         int delayMs = int(offsetMs);
         if (delayMs < 0) delayMs = 0;
@@ -533,9 +604,9 @@ void MainWindow::onABEpochReady(int phaseIndex,
         it.offsetMs = offsetMs;
         it.amp_uA = r.suggestedAmplitude_uA;
         it.pulses = pulses;
-        it.ch = r.channelIndex;
+        it.ch = r.channelIndex;          // 0/1 => a平均/b平均
         it.spike_uV = r.spikeAmplitude_uV;
-        it.electrode = targetElectrode;
+        it.electrode = targetElectrode;  // ✅ 按 region 分流到对应刺激电极
         it.fired = false;
         items.push_back(it);
 
@@ -562,9 +633,11 @@ void MainWindow::onABEpochReady(int phaseIndex,
         ensureTimelineVisible();
     }
 
-    appendLog(QString("%1: epochId=%2 计划刺激=%3")
-                  .arg(phaseName).arg(epochId).arg(items.size()));
+    appendLog(QString("%1: epochId=%2 计划刺激=%3（a<=%4, b<=%4）")
+                  .arg(phaseName).arg(epochId).arg(items.size()).arg(maxPerRegion));
 }
+
+
 
 void MainWindow::handleError(const QString &msg)
 {

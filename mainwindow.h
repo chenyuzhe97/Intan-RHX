@@ -57,6 +57,8 @@ private:
     void appendLog(const QString &msg);
     void ensureTimelineVisible();
     void ensureFftVisible();
+    QVector<int> meanSelectedChannels(const QVector<QVector<int>> &channelData,
+                                      const QVector<int> &sel);
 
 private:
     QWidget        *m_central = nullptr;
@@ -119,4 +121,22 @@ private:
 
     // 拼写保留
     double colletion_time = 5.0;
+
+    // ====== 你要自定义的：每个 phase 用哪些通道做区域平均 ======
+    // phaseIndex==0: 来自老鼠A的感受电极( stream0 )，算 a/b 两条平均信号
+    const QVector<int> kSense_A_a = {1, 5, 7};  // A 的 a区：你自己改
+    const QVector<int> kSense_A_b = {9, 11, 15};  // A 的 b区：你自己改
+
+    // phaseIndex==1: 来自老鼠B的感受电极( stream2 )，算 a'/b' 两条平均信号
+    const QVector<int> kSense_B_a = {1, 5, 7};   // B 的 a'区：你自己改
+    const QVector<int> kSense_B_b = {9, 11, 15}; // B 的 b'区：你自己改
+
+    // ====== 你要自定义的：刺激电极名字（必须符合你 ElectrodeParameters 的命名规则）======
+    // 我先按你原来用过的 "A1"/"B1" 风格，扩展成两根：A1/A2, B1/B2
+    const QString kStim_A_a = "A2";  // 刺激老鼠A a区 的刺激电极
+    const QString kStim_A_b = "A7";  // 刺激老鼠A b区 的刺激电极
+    const QString kStim_B_a = "B2";  // 刺激老鼠B a'区 的刺激电极
+    const QString kStim_B_b = "B7";  // 刺激老鼠B b'区 的刺激电极
+
+
 };
