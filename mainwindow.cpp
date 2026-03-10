@@ -726,6 +726,7 @@ void MainWindow::onEpochDurationChanged(double sec)
 {
     colletion_time = sec;
     if (m_experiment) m_experiment->setEpochDuration(colletion_time);
+    m_timeline->setEpochSec(colletion_time);
     appendLog(QString("Epoch 时长设置为 %1 s").arg(colletion_time, 0, 'f', 2));
 }
 

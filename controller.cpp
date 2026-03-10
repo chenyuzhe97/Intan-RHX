@@ -13,7 +13,8 @@ void Controller::setStimSequenceParameters(ElectrodeParameters *parameters)
 
     int stream  = parameters->stream;
     int channel = parameters->channel;
-
+    qDebug()<<"当前触发通道为：" << channel;
+    qDebug()<<"当前触发流为:" << stream;
     double timestep    = 33.3333;
     double currentstep = 0.5;
     int numOfPulses    = parameters->numOfPulses;
@@ -25,7 +26,6 @@ void Controller::setStimSequenceParameters(ElectrodeParameters *parameters)
                                         parameters->enabled,
                                         1,
                                         0);
-    qDebug()<<"可否触发"<<parameters->enabled;
     qDebug()<<"触发源："<<parameters->triggerSource;
 
     rhxController->configureStimPulses(stream,
