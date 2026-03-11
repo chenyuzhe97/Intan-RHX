@@ -21,7 +21,8 @@ public:
     void SetElectrodeInfo(int streamNum, int channelNum);
 
     // 3. 设置刺激时序参数
-    void SetStimulationTiming(int postTriggerDelay, int firstPhaseDuration, int secondPhaseDuration,int refractoryPeriod);
+    void SetStimulationTiming(int postTriggerDelay, int firstPhaseDuration, int secondPhaseDuration,
+                              int interphaseDelay, int refractoryPeriod = 30);
 
     // 4. 设置电极刺激强度
     void SetStimulationAmplitude(int firstPhaseAmplitude,int secondPhaseAmplitude);

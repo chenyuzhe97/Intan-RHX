@@ -54,6 +54,7 @@ public:
 
     // 触发某个 triggerSource 的刺激
     void triggerStim(int triggerSource, bool on);
+    void pulseStim(int triggerSource);
 
     // ⭐ 根据算法结果构造刺激并触发
     void applyAdaptiveStim(const QString &electrodeName,

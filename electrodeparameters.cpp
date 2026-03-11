@@ -79,11 +79,14 @@ void ElectrodeParameters::SetElectrodeInfo(int streamNum, int channelNum)
     channel = channelNum;
 }
 
-void ElectrodeParameters::SetStimulationTiming(int postTriggerDelay, int firstPhaseDuration, int secondPhaseDuration, int refractoryPeriod)
+void ElectrodeParameters::SetStimulationTiming(int postTriggerDelay, int firstPhaseDuration,
+                                               int secondPhaseDuration, int interphaseDelay,
+                                               int refractoryPeriod)
 {
     this->postTriggerDelay = postTriggerDelay;
     this->firstPhaseDuration = firstPhaseDuration;
     this->secondPhaseDuration = secondPhaseDuration;
+    this->interphaseDelay = interphaseDelay;
     this->refractoryPeriod = refractoryPeriod;
 }
 
