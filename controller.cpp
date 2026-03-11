@@ -1,201 +1,194 @@
-#include "controller.h"
+﻿#include "controller.h"
 
-Controller::Controller(AbstractRHXController* rhxController_):rhxController(rhxController_){}
+#include <QThread>
+
+namespace {
+
+constexpr int kNever = 65535;
+constexpr int kStimStepSize = StimStepSize500nA;
+constexpr int kRunningStimUpdateMinUs = 500;
+constexpr int kRunningStimUpdateGuardUs = 200;
+constexpr double kFallbackSampleRateHz = 30000.0;
+
+int runningStimUpdateDelayUs(AbstractRHXController* controller, int commandSequenceLength)
+{
+    const double sampleRateHz = controller ? controller->getSampleRate() : kFallbackSampleRateHz;
+    if (sampleRateHz <= 0.0) return 1000;
+
+    const double sequenceUs = std::ceil((1.0e6 * commandSequenceLength) / sampleRateHz);
+    return qMax(kRunningStimUpdateMinUs, int(sequenceUs) + kRunningStimUpdateGuardUs);
+}
+
+}
+
+Controller::Controller(AbstractRHXController* rhxController_)
+    : rhxController(rhxController_)
+{
+}
 
 void Controller::setStimSequenceParameters(ElectrodeParameters *parameters)
 {
+    if (!parameters) return;
     if (rhxController->isSynthetic() || rhxController->isPlayback()) return;
 
-    // ⭐ 先记住当前控制器是否在跑（continuous 采集中）
-    bool controllerIsRunning = rhxController->isRunning();
+    const bool controllerIsRunning = rhxController->isRunning();
+    const int stream = parameters->stream;
+    const int channel = parameters->channel;
+    const double sampleRateHz = rhxController->getSampleRate();
+    const double timestep = (sampleRateHz > 0.0) ? (1.0e6 / sampleRateHz) : (1.0e6 / kFallbackSampleRateHz);
+    const double currentstep = RHXRegisters::stimStepSizeToDouble(static_cast<StimStepSize>(kStimStepSize)) * 1.0e6;
+    const int numOfPulses = qMax(1, parameters->numOfPulses);
 
-    const int Never = 65535;
+    const bool edgeTriggered = (parameters->triggerEdgeOrlevel == TriggerEdge);
+    const bool triggerOnLow = (parameters->triggerHighOrlow == TriggerLow);
+    const StimShape stimShape = static_cast<StimShape>(parameters->stimShape);
+    const bool negativeFirst = (parameters->StimPolarity == NegativeFirst);
 
-    int stream  = parameters->stream;
-    int channel = parameters->channel;
-    qDebug()<<"当前触发通道为：" << channel;
-    qDebug()<<"当前触发流为:" << stream;
-    double timestep    = 33.3333;
-    double currentstep = 0.5;
-    int numOfPulses    = parameters->numOfPulses;
-
-    // ==== 1) 配置触发源 & 脉冲数（这部分无论是否在跑都可以做） ====
     rhxController->configureStimTrigger(stream,
                                         channel,
                                         parameters->triggerSource,
                                         parameters->enabled,
-                                        1,
-                                        0);
-    qDebug()<<"触发源："<<parameters->triggerSource;
+                                        edgeTriggered,
+                                        triggerOnLow);
 
     rhxController->configureStimPulses(stream,
                                        channel,
                                        numOfPulses,
-                                       (StimShape)0,
-                                       1);
+                                       stimShape,
+                                       negativeFirst);
 
-    // ==== 2) 计算各个时间事件 ====
-    int preStimAmpSettle      = parameters->preStimAmpSettle      / timestep;
-    int postStimAmpSettle     = parameters->postStimAmpSettle     / timestep;
-    int postTriggerDelay      = parameters->postTriggerDelay      / timestep;
-    int firstPhaseDuration    = parameters->firstPhaseDuration    / timestep;
-    int secondPhaseDuration   = parameters->secondPhaseDuration   / timestep;
-    int interphaseDelay       = parameters->interphaseDelay       / timestep;
-    int refractoryPeriod      = parameters->refractoryPeriod      / timestep;
-    int postStimChargeRecovOn = parameters->postStimChargeRecovOn / timestep;
-    int postStimChargeRecovOff= parameters->postStimChargeRecovOff/ timestep;
-    int pulseTrainPeriod      = parameters->pulseTrainPeriod      / timestep;
+    const int preStimAmpSettle = qRound(parameters->preStimAmpSettle / timestep);
+    const int postStimAmpSettle = qRound(parameters->postStimAmpSettle / timestep);
+    const int postTriggerDelay = qRound(parameters->postTriggerDelay / timestep);
+    const int firstPhaseDuration = qRound(parameters->firstPhaseDuration / timestep);
+    const int secondPhaseDuration = qRound(parameters->secondPhaseDuration / timestep);
+    const int interphaseDelay = qRound(parameters->interphaseDelay / timestep);
+    const int refractoryPeriod = qRound(parameters->refractoryPeriod / timestep);
+    const int postStimChargeRecovOn = qRound(parameters->postStimChargeRecovOn / timestep);
+    const int postStimChargeRecovOff = qRound(parameters->postStimChargeRecovOff / timestep);
+    const int pulseTrainPeriod = qRound(parameters->pulseTrainPeriod / timestep);
 
-    int eventStartStim;
-    int eventStimPhase2;
-    int eventStimPhase3;
-    int eventEndStim;
-    int eventEnd;
-    int eventRepeatStim;
-    int eventAmpSettleOn;
-    int eventAmpSettleOff;
-    int eventAmpSettleOnRepeat;
-    int eventAmpSettleOffRepeat;
-    int eventChargeRecovOn;
-    int eventChargeRecovOff;
+    int eventStartStim = 0;
+    int eventStimPhase2 = kNever;
+    int eventStimPhase3 = kNever;
+    int eventEndStim = 0;
+    int eventEnd = 0;
+    int eventRepeatStim = kNever;
+    int eventAmpSettleOn = kNever;
+    int eventAmpSettleOff = 0;
+    int eventAmpSettleOnRepeat = kNever;
+    int eventAmpSettleOffRepeat = kNever;
+    int eventChargeRecovOn = kNever;
+    int eventChargeRecovOff = 0;
 
-    switch ((StimShape) parameters->stimShape) {
+    switch (stimShape) {
     case Biphasic:
-        eventStartStim  = postTriggerDelay;
+        eventStartStim = postTriggerDelay;
         eventStimPhase2 = eventStartStim + firstPhaseDuration;
-        eventStimPhase3 = Never;
-        eventEndStim    = eventStimPhase2 + secondPhaseDuration;
-        eventEnd        = eventEndStim + refractoryPeriod;
+        eventStimPhase3 = kNever;
+        eventEndStim = eventStimPhase2 + secondPhaseDuration;
+        eventEnd = eventEndStim + refractoryPeriod;
         break;
     case BiphasicWithInterphaseDelay:
-        eventStartStim  = postTriggerDelay;
+        eventStartStim = postTriggerDelay;
         eventStimPhase2 = eventStartStim + firstPhaseDuration;
         eventStimPhase3 = eventStimPhase2 + interphaseDelay;
-        eventEndStim    = eventStimPhase3 + secondPhaseDuration;
-        eventEnd        = eventEndStim + refractoryPeriod;
+        eventEndStim = eventStimPhase3 + secondPhaseDuration;
+        eventEnd = eventEndStim + refractoryPeriod;
         break;
     case Triphasic:
-        eventStartStim  = postTriggerDelay;
+        eventStartStim = postTriggerDelay;
         eventStimPhase2 = eventStartStim + firstPhaseDuration;
         eventStimPhase3 = eventStimPhase2 + secondPhaseDuration;
-        eventEndStim    = eventStimPhase3 + firstPhaseDuration;
-        eventEnd        = eventEndStim + refractoryPeriod;
+        eventEndStim = eventStimPhase3 + firstPhaseDuration;
+        eventEnd = eventEndStim + refractoryPeriod;
         break;
     case Monophasic:
-        // 暂时不支持单相就直接返回
-        return;
+        eventStartStim = postTriggerDelay;
+        eventStimPhase2 = kNever;
+        eventStimPhase3 = kNever;
+        eventEndStim = eventStartStim + firstPhaseDuration;
+        eventEnd = eventEndStim + refractoryPeriod;
+        break;
     }
 
-    if (parameters->pulseOrTrain == 1) {
+    if (parameters->pulseOrTrain == PulseTrain) {
         eventRepeatStim = eventStartStim + pulseTrainPeriod;
-    } else {
-        eventRepeatStim = Never;
     }
 
     if (parameters->enableAmpSettle) {
-        eventAmpSettleOn  = eventStartStim - preStimAmpSettle;
+        eventAmpSettleOn = eventStartStim - preStimAmpSettle;
         eventAmpSettleOff = eventEndStim + postStimAmpSettle;
-        if (parameters->maintainAmpSettle) {
-            eventAmpSettleOnRepeat  = Never;
-            eventAmpSettleOffRepeat = Never;
-        } else {
-            eventAmpSettleOnRepeat  = eventRepeatStim - preStimAmpSettle;
-            eventAmpSettleOffRepeat = postStimAmpSettle;
+        if (!parameters->maintainAmpSettle && eventRepeatStim != kNever) {
+            eventAmpSettleOnRepeat = eventRepeatStim - preStimAmpSettle;
+            eventAmpSettleOffRepeat = eventAmpSettleOff;
         }
-    } else {
-        eventAmpSettleOn       = Never;
-        eventAmpSettleOff      = 0;
-        eventAmpSettleOnRepeat = Never;
-        eventAmpSettleOffRepeat= Never;
     }
 
     if (parameters->enableChargeRecovery) {
-        eventChargeRecovOn  = eventEndStim + postStimChargeRecovOn;
+        eventChargeRecovOn = eventEndStim + postStimChargeRecovOn;
         eventChargeRecovOff = eventEndStim + postStimChargeRecovOff;
-    } else {
-        eventChargeRecovOn  = Never;
-        eventChargeRecovOff = 0;
     }
 
-    // ==== 3) 把事件时间写进刺激寄存器（运行中也可以安全改） ====
-    rhxController->programStimReg(stream, channel, AbstractRHXController::EventAmpSettleOn,        eventAmpSettleOn);
-    rhxController->programStimReg(stream, channel, AbstractRHXController::EventStartStim,          eventStartStim);
-    rhxController->programStimReg(stream, channel, AbstractRHXController::EventStimPhase2,         eventStimPhase2);
-    rhxController->programStimReg(stream, channel, AbstractRHXController::EventStimPhase3,         eventStimPhase3);
-    rhxController->programStimReg(stream, channel, AbstractRHXController::EventEndStim,            eventEndStim);
-    rhxController->programStimReg(stream, channel, AbstractRHXController::EventRepeatStim,         eventRepeatStim);
-    rhxController->programStimReg(stream, channel, AbstractRHXController::EventAmpSettleOff,       eventAmpSettleOff);
-    rhxController->programStimReg(stream, channel, AbstractRHXController::EventChargeRecovOn,      eventChargeRecovOn);
-    rhxController->programStimReg(stream, channel, AbstractRHXController::EventChargeRecovOff,     eventChargeRecovOff);
-    rhxController->programStimReg(stream, channel, AbstractRHXController::EventAmpSettleOnRepeat,  eventAmpSettleOnRepeat);
+    rhxController->programStimReg(stream, channel, AbstractRHXController::EventAmpSettleOn, eventAmpSettleOn);
+    rhxController->programStimReg(stream, channel, AbstractRHXController::EventStartStim, eventStartStim);
+    rhxController->programStimReg(stream, channel, AbstractRHXController::EventStimPhase2, eventStimPhase2);
+    rhxController->programStimReg(stream, channel, AbstractRHXController::EventStimPhase3, eventStimPhase3);
+    rhxController->programStimReg(stream, channel, AbstractRHXController::EventEndStim, eventEndStim);
+    rhxController->programStimReg(stream, channel, AbstractRHXController::EventRepeatStim, eventRepeatStim);
+    rhxController->programStimReg(stream, channel, AbstractRHXController::EventAmpSettleOff, eventAmpSettleOff);
+    rhxController->programStimReg(stream, channel, AbstractRHXController::EventChargeRecovOn, eventChargeRecovOn);
+    rhxController->programStimReg(stream, channel, AbstractRHXController::EventChargeRecovOff, eventChargeRecovOff);
+    rhxController->programStimReg(stream, channel, AbstractRHXController::EventAmpSettleOnRepeat, eventAmpSettleOnRepeat);
     rhxController->programStimReg(stream, channel, AbstractRHXController::EventAmpSettleOffRepeat, eventAmpSettleOffRepeat);
-    rhxController->programStimReg(stream, channel, AbstractRHXController::EventEnd,                eventEnd);
+    rhxController->programStimReg(stream, channel, AbstractRHXController::EventEnd, eventEnd);
 
-    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventAmpSettleOn,        0);
-    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventStartStim,          0);
-    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventStimPhase2,         3);
-    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventStimPhase3,         65535);
-    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventEndStim,            6);
-    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventRepeatStim,         65535);
-    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventAmpSettleOff,       36);
-    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventChargeRecovOn,      65535);
-    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventChargeRecovOff,     0);
-    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventAmpSettleOnRepeat,  65535);
-    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventAmpSettleOffRepeat, 30);
-    // rhxController->programStimReg(stream, channel, AbstractRHXController::EventEnd,                36);
-
-    rhxController->enableAuxCommandsOnOneStream(stream);
-
-    // ==== 4) 设置幅度，生成并上传 Aux 命令序列（运行中也 OK） ====
     RHXRegisters chipRegisters(rhxController->getType(),
-                               rhxController->getSampleRate(),StimStepSize500nA);
-    int commandSequenceLength;
+                               rhxController->getSampleRateEnum(),
+                               static_cast<StimStepSize>(kStimStepSize));
+    int commandSequenceLength = 0;
     std::vector<unsigned int> commandList;
 
-    // 你这边改过的：μA → Intan 刺激 DAC 代码的转换
-    qDebug()<<"原始刺激大小：" << parameters->firstPhaseAmplitude;
-    int firstPhaseMagnitude  = qRound(parameters->firstPhaseAmplitude  / currentstep / 1000.0);
-    int secondPhaseMagnitude = qRound(parameters->secondPhaseAmplitude / currentstep / 1000.0);
+    const int firstPhaseMagnitude = qRound(parameters->firstPhaseAmplitude / currentstep);
+    const int secondPhaseMagnitude = qRound(parameters->secondPhaseAmplitude / currentstep);
 
-    qDebug()<<"当前刺激大小:" <<firstPhaseMagnitude << "mv";
+    int posMag = 0;
+    int negMag = 0;
+    if (negativeFirst) {
+        negMag = firstPhaseMagnitude;
+        posMag = secondPhaseMagnitude;
+    } else {
+        posMag = firstPhaseMagnitude;
+        negMag = secondPhaseMagnitude;
+    }
 
-    // int posMag = firstPhaseMagnitude;
-    // int negMag = secondPhaseMagnitude;
-
-    int posMag = parameters->firstPhaseAmplitude/5;
-    int negMag = parameters->secondPhaseAmplitude/5;
-
-    commandSequenceLength =
-        chipRegisters.createCommandListSetStimMagnitudes(commandList,
-                                                         channel,
-                                                         posMag,
-                                                         0,
-                                                         negMag,
-                                                         0);
+    commandSequenceLength = chipRegisters.createCommandListSetStimMagnitudes(commandList,
+                                                                             channel,
+                                                                             posMag,
+                                                                             0,
+                                                                             negMag,
+                                                                             0);
     rhxController->uploadCommandList(commandList, AbstractRHXController::AuxCmd1, 0);
     rhxController->selectAuxCommandLength(AbstractRHXController::AuxCmd1,
                                           0,
                                           commandSequenceLength - 1);
 
-    chipRegisters.createCommandListDummy(
-        commandList,
-        8192,
-        chipRegisters.createRHXCommand(RHXRegisters::RHXCommandRegRead, 255));
+    chipRegisters.createCommandListDummy(commandList,
+                                         8192,
+                                         chipRegisters.createRHXCommand(RHXRegisters::RHXCommandRegRead, 255));
     rhxController->uploadCommandList(commandList, AbstractRHXController::AuxCmd2, 0);
     rhxController->uploadCommandList(commandList, AbstractRHXController::AuxCmd3, 0);
     rhxController->uploadCommandList(commandList, AbstractRHXController::AuxCmd4, 0);
 
-    // ================== 分界线 ==================
-    // 上面的东西都是 "写配置"、"上传指令" —— continuous 状态下是安全的。
-    // 下面这一大坨 run()/while()/register read，只在控制器不在跑的时候才做。
-    // =======================================================
-
     if (controllerIsRunning) {
-        // ⭐ 正在 continuous 采集：到这里就够了，不要打断采集。
+        // In closed-loop operation we keep acquisition running, briefly allow manual aux commands
+        // to program magnitudes on the selected stream, then restore automatic stim sequencing.
+        rhxController->setStimCmdMode(false);
+        rhxController->enableAuxCommandsOnOneStream(stream);
+        QThread::usleep(runningStimUpdateDelayUs(rhxController, commandSequenceLength));
+        rhxController->setStimCmdMode(true);
         return;
     }
-
-    // ====== 以下是“离线配置/校准模式”，只在未运行时执行 ======
 
     rhxController->setMaxTimeStep(commandSequenceLength);
     rhxController->setContinuousRunMode(false);
@@ -204,7 +197,6 @@ void Controller::setStimSequenceParameters(ElectrodeParameters *parameters)
 
     rhxController->run();
     while (rhxController->isRunning()) {
-        // 离线状态下这样阻塞没问题
     }
 
     commandSequenceLength = chipRegisters.createCommandListRHSRegisterRead(commandList);
@@ -219,15 +211,13 @@ void Controller::setStimSequenceParameters(ElectrodeParameters *parameters)
     rhxController->readDataBlock(&dataBlock);
     rhxController->readDataBlock(&dataBlock);
 
-    commandSequenceLength =
-        chipRegisters.createCommandListRHSRegisterConfig(commandList, true);
+    commandSequenceLength = chipRegisters.createCommandListRHSRegisterConfig(commandList, true);
     rhxController->uploadCommandList(commandList, AbstractRHXController::AuxCmd1, 0);
     rhxController->selectAuxCommandLength(AbstractRHXController::AuxCmd1, 0, commandSequenceLength - 1);
     rhxController->enableAuxCommandsOnOneStream(stream);
 }
 
-
 void Controller::stimTrigger(int triggerNumber, bool triggerOn)
 {
-    rhxController->setManualStimTrigger(triggerNumber,triggerOn);
+    rhxController->setManualStimTrigger(triggerNumber, triggerOn);
 }
