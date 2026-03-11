@@ -112,16 +112,16 @@ void MainWindow::setupUi()
     m_central = new QWidget(this);
     m_layout  = new QVBoxLayout(m_central);
 
-    // ===== 椤堕儴鎸夐挳琛?=====
+    // ===== 顶部按钮栏 =====
     {
         QHBoxLayout *row = new QHBoxLayout();
 
-        m_btnOpen     = new QPushButton(tr("鎵撳紑璁惧"), this);
-        m_btnStart    = new QPushButton(tr("寮€濮嬮噰闆?), this);
-        m_btnStop     = new QPushButton(tr("鍋滄閲囬泦"), this);
-        m_btnStimOnce = new QPushButton(tr("鍙戜竴娆″埡婵€ (trigger=0)"), this);
-        m_btnRecStart = new QPushButton(tr("寮€濮嬪綍鍒?bin)"), this);
-        m_btnRecStop  = new QPushButton(tr("鍋滄褰曞埗"), this);
+        m_btnOpen     = new QPushButton(tr("打开设备"), this);
+        m_btnStart    = new QPushButton(tr("开始采集"), this);
+        m_btnStop     = new QPushButton(tr("停止采集"), this);
+        m_btnStimOnce = new QPushButton(tr("发一次刺激 (trigger=0)"), this);
+        m_btnRecStart = new QPushButton(tr("开始录制(bin)"), this);
+        m_btnRecStop  = new QPushButton(tr("停止录制"), this);
 
         row->addWidget(m_btnOpen);
         row->addWidget(m_btnStart);
@@ -145,35 +145,35 @@ void MainWindow::setupUi()
         m_layout->addLayout(row);
     }
 
-    // ===== 鏄剧ず鑼冨洿锛埪眜V锛夎 =====
+    // ===== 显示范围(uV) =====
     {
         QHBoxLayout *row = new QHBoxLayout();
 
-        row->addWidget(new QLabel(tr("Stream0 鏄剧ず鑼冨洿(卤uV):"), this));
+        row->addWidget(new QLabel(tr("Stream0 显示范围(uV):"), this));
         m_spinGainA = new QDoubleSpinBox(this);
         m_spinGainA->setRange(10.0, 200000.0);
         m_spinGainA->setDecimals(0);
         m_spinGainA->setSingleStep(100.0);
         m_spinGainA->setValue(500.0);
-        m_spinGainA->setSuffix(" 碌V");
+        m_spinGainA->setSuffix(" uV");
         row->addWidget(m_spinGainA);
 
         row->addSpacing(20);
 
-        row->addWidget(new QLabel(tr("Stream2 鏄剧ず鑼冨洿(卤uV):"), this));
+        row->addWidget(new QLabel(tr("Stream2 显示范围(uV):"), this));
         m_spinGainB = new QDoubleSpinBox(this);
         m_spinGainB->setRange(10.0, 200000.0);
         m_spinGainB->setDecimals(0);
         m_spinGainB->setSingleStep(100.0);
         m_spinGainB->setValue(500.0);
-        m_spinGainB->setSuffix(" 碌V");
+        m_spinGainB->setSuffix(" uV");
         row->addWidget(m_spinGainB);
 
         row->addStretch(1);
         m_layout->addLayout(row);
     }
 
-    // ===== DSP/FFT 鎺т欢琛?=====
+    // ===== DSP / FFT 控件 =====
     {
         QHBoxLayout *row = new QHBoxLayout();
 
@@ -249,7 +249,7 @@ void MainWindow::setupUi()
         m_layout->addLayout(row);
     }
 
-    // ===== 宸﹀彸鍒嗗睆锛氫袱涓?stream =====
+    // ===== 左右分屏：两个 stream =====
     m_split = new QSplitter(Qt::Horizontal, this);
 
     m_viewA = new StackedWaveWidget(this);
@@ -272,7 +272,7 @@ void MainWindow::setupUi()
 
     m_layout->addWidget(m_split, 3);
 
-    // ===== 鏃ュ織 =====
+    // ===== 日志 =====
     m_logView  = new QPlainTextEdit(this);
     m_logView->setReadOnly(true);
     m_layout->addWidget(m_logView, 1);
@@ -337,7 +337,7 @@ QVector<int> MainWindow::meanSelectedChannels(const QVector<QVector<int> > &chan
 {
     if (channelData.isEmpty() || sel.isEmpty()) return {};
 
-    // 浠ョ0閫氶亾闀垮害浣滀负鍩哄噯锛堜綘杩欏閲囬泦涓€鑸悇閫氶亾绛夐暱锛?
+    // 以第 0 通道长度作为基准；这套采集里各通道通常是等长的。
     const int N = channelData[0].size();
     if (N <= 0) return {};
 
@@ -354,7 +354,7 @@ QVector<int> MainWindow::meanSelectedChannels(const QVector<QVector<int> > &chan
             sum += (long long)v[i];
             used++;
         }
-        if (used == 0) return {}; // sel 鍏ㄦ棤鏁堝氨鐩存帴澶辫触
+        if (used == 0) return {}; // 选择的通道全都无效时直接返回失败
         out[i] = (int)std::llround((double)sum / (double)used);
     }
     return out;
@@ -375,7 +375,7 @@ bool MainWindow::parseChannels1Based(const QString &text, QVector<int> &outZeroB
 {
     const QString t = text.trimmed();
     if (t.isEmpty()) {
-        if (err) *err = QStringLiteral("涓嶈兘涓虹┖銆傜ず渚嬶細1,5,7");
+        if (err) *err = QStringLiteral("不能为空。示例：1,5,7");
         return false;
     }
 
@@ -390,18 +390,18 @@ bool MainWindow::parseChannels1Based(const QString &text, QVector<int> &outZeroB
         bool ok = false;
         const int val1 = tok.toInt(&ok);
         if (!ok) {
-            if (err) *err = QStringLiteral("鍖呭惈闈炴暟瀛楋細%1").arg(tok);
+            if (err) *err = QStringLiteral("包含非数字：%1").arg(tok);
             return false;
         }
         if (val1 <= 0) {
-            if (err) *err = QStringLiteral("閫氶亾蹇呴』涓烘鏁存暟(1-based)锛?1").arg(val1);
+            if (err) *err = QStringLiteral("通道必须为正整数(1-based)：%1").arg(val1);
             return false;
         }
         v.push_back(val1 - 1); // to 0-based
     }
 
     if (v.isEmpty()) {
-        if (err) *err = QStringLiteral("鏈В鏋愬埌浠讳綍閫氶亾銆傜ず渚嬶細1,5,7");
+        if (err) *err = QStringLiteral("未解析到任何通道。示例：1,5,7");
         return false;
     }
 
@@ -447,7 +447,7 @@ void MainWindow::setupElectrodeConfigDock()
         hl->setContentsMargins(0,0,0,0);
         QLabel *lab = new QLabel(prefix, w);
         spinOut = new QSpinBox(w);
-        spinOut->setRange(1, 64); // TODO: 濡傛灉浣犵殑鐢垫瀬缂栧彿鑼冨洿涓嶆槸 1..64锛岃嚜琛屾敼杩欓噷
+        spinOut->setRange(1, 64); // TODO: 如果你的电极编号范围不是 1..64，请在这里调整
         spinOut->setSingleStep(1);
         hl->addWidget(lab);
         hl->addWidget(spinOut, 1);
@@ -476,7 +476,7 @@ void MainWindow::setupElectrodeConfigDock()
     connect(m_btnApplyElectrode, &QPushButton::clicked,
             this, &MainWindow::applyElectrodeConfigFromUi);
 
-    // 鍒濆鍖?UI 涓哄綋鍓嶉粯璁ゅ€?
+    // 初始化 UI 为当前默认值
     m_editSense_A_a->setText(formatChannels1Based(kSense_A_a));
     m_editSense_A_b->setText(formatChannels1Based(kSense_A_b));
     m_editSense_B_a->setText(formatChannels1Based(kSense_B_a));
@@ -627,7 +627,7 @@ void MainWindow::onToggleFftWindows()
 {
     if (!m_fftA || !m_fftB || !m_viewA || !m_viewB) return;
 
-    // 璺熼殢褰撳墠閫変腑閫氶亾
+    // 跟随当前选中的通道
     m_fftA->setChannel(m_viewA->selectedChannel());
     m_fftB->setChannel(m_viewB->selectedChannel());
 
@@ -646,14 +646,14 @@ void MainWindow::onOpenDevice()
 {
     QString path = QFileDialog::getOpenFileName(
         this,
-        tr("閫夋嫨 ConfigRHSController_7310.bit"),
+        tr("选择 ConfigRHSController_7310.bit"),
         QString(),
         tr("Bitfile (*.bit);;All Files (*.*)")
         );
     if (path.isEmpty()) return;
 
-    if (!m_engine->openDevice(path)) appendLog("鎵撳紑璁惧澶辫触");
-    else appendLog("鎵撳紑璁惧鎴愬姛");
+    if (!m_engine->openDevice(path)) appendLog("打开设备失败");
+    else appendLog("打开设备成功");
 }
 
 void MainWindow::onStart()
@@ -668,14 +668,14 @@ void MainWindow::onStart()
     }
 
     ensureTimelineVisible();
-    appendLog(QString("寮€濮嬮噰闆?+ AB epoch=%1 s").arg(colletion_time, 0, 'f', 2));
+    appendLog(QString("开始采集 + AB epoch=%1 s").arg(colletion_time, 0, 'f', 2));
 }
 
 void MainWindow::onStop()
 {
     if (m_experiment) m_experiment->stop();
     if (m_engine)     m_engine->stopAcquisition();
-    appendLog("宸插仠姝㈤噰闆?);
+    appendLog("已停止采集");
 }
 
 void MainWindow::onRecStart()
@@ -684,20 +684,20 @@ void MainWindow::onRecStart()
 
     QString file = QFileDialog::getSaveFileName(
         this,
-        tr("閫夋嫨褰曞埗鏂囦欢淇濆瓨璺緞"),
+        tr("选择录制文件保存路径"),
         QDir::currentPath() + "/recording.bar",
         tr("Binary Recording (*.bar);;All Files (*.*)")
         );
     if (file.isEmpty()) return;
 
     if (m_engine->startBinaryRecording(file)) {
-        appendLog("寮€濮嬪綍鍒跺埌鏂囦欢锛? + file);
+        appendLog("开始录制到文件：" + file);
         if (m_stimLog) {
             m_stimLog->start(file + ".stim.csv");
-            appendLog("Stim log 鍐欏叆锛? + file + ".stim.csv");
+            appendLog("Stim log 写入：" + file + ".stim.csv");
         }
     } else {
-        appendLog("寮€濮嬪綍鍒跺け璐?);
+        appendLog("开始录制失败");
     }
 }
 
@@ -705,12 +705,12 @@ void MainWindow::onRecStop()
 {
     if (!m_engine) return;
     m_engine->stopBinaryRecording();
-    appendLog("宸插仠姝㈠綍鍒?);
+    appendLog("已停止录制");
 
     if (m_stimLog) {
         m_stimLog->stop();
         m_stimLog->start(QDir::currentPath() + "/stim_log.csv");
-        appendLog("Stim log 鍒囧洖榛樿锛歴tim_log.csv");
+        appendLog("Stim log 切回默认：stim_log.csv");
     }
 }
 
@@ -719,7 +719,7 @@ void MainWindow::onStimOnce()
     if (!m_engine || !m_engine->rhx()) return;
 
     if (!m_engine->rhx()->isRunning()) {
-        appendLog("Start acquisition before manual stim");
+        appendLog("请先开始采集，再手动刺激");
         return;
     }
 
@@ -741,7 +741,7 @@ void MainWindow::onStimOnce()
                             triggerSource);
     m_engine->pulseStim(triggerSource);
 
-    appendLog(QString("Manual stim fired: electrode=%1, trigger=%2, amp=%3uA")
+    appendLog(QString("已触发一次刺激：电极=%1, trigger=%2, 幅度=%3uA")
                   .arg(electrodeName)
                   .arg(triggerSource)
                   .arg(amplitude_uA));
@@ -752,7 +752,7 @@ void MainWindow::onEpochDurationChanged(double sec)
     colletion_time = sec;
     if (m_experiment) m_experiment->setEpochDuration(colletion_time);
     m_timeline->setEpochSec(colletion_time);
-    appendLog(QString("Epoch 鏃堕暱璁剧疆涓?%1 s").arg(colletion_time, 0, 'f', 2));
+    appendLog(QString("Epoch 时长设置为 %1 s").arg(colletion_time, 0, 'f', 2));
 }
 
 void MainWindow::onGainAChanged(double halfRangeUv)
@@ -765,17 +765,14 @@ void MainWindow::onGainBChanged(double halfRangeUv)
     if (m_viewB) m_viewB->setGainUv(halfRangeUv);
 }
 
-
-
 void MainWindow::onABEpochReady(int phaseIndex,
                                 const QVector<uint32_t> &timeStamps,
                                 const QVector<QVector<int>> &channelData)
 {
-    const QString phaseName = (phaseIndex == 0) ? "PhaseA (A绔?stream0)" : "PhaseB (B绔?stream2)";
+    const QString phaseName = (phaseIndex == 0) ? "PhaseA (A端 stream0)" : "PhaseB (B端 stream2)";
     if (!m_abAlgo || !m_engine) return;
     if (timeStamps.isEmpty() || channelData.isEmpty()) return;
 
-    // 1) 鎸?phase 閫夋嫨閫氶亾鍒楄〃锛岀畻涓ゆ潯骞冲潎淇″彿锛歛vg[0]=a鍖猴紝avg[1]=b鍖?
     const QVector<int> &sel_a = (phaseIndex == 0) ? kSense_A_a : kSense_B_a;
     const QVector<int> &sel_b = (phaseIndex == 0) ? kSense_A_b : kSense_B_b;
 
@@ -783,33 +780,29 @@ void MainWindow::onABEpochReady(int phaseIndex,
     QVector<int> avg_b = meanSelectedChannels(channelData, sel_b);
 
     if (avg_a.isEmpty() || avg_b.isEmpty() || avg_a.size() != timeStamps.size() || avg_b.size() != timeStamps.size()) {
-        appendLog(phaseName + ": 骞冲潎淇″彿鐢熸垚澶辫触锛堥€氶亾鍒楄〃/鏁版嵁闀垮害涓嶅尮閰嶏級");
+        appendLog(phaseName + ": 平均信号生成失败（通道列表/数据长度不匹配）");
         return;
     }
 
     QVector<QVector<int>> avgChannelData;
     avgChannelData.reserve(2);
-    avgChannelData.push_back(avg_a); // chIndex=0 -> a鍖哄钩鍧?
-    avgChannelData.push_back(avg_b); // chIndex=1 -> b鍖哄钩鍧?
+    avgChannelData.push_back(avg_a);
+    avgChannelData.push_back(avg_b);
 
-    // 2) 鎶娾€?璺钩鍧囦俊鍙封€濋€佽繘浣犵幇鏈夌畻娉曪紙绠楁硶涓嶇敤鏀癸紝浠嶇劧鍋氭护娉?灏栧嘲妫€娴嬶級
     const QVector<ABAlgorithm::Result> allResults =
         m_abAlgo->analyzeEpoch(phaseIndex, timeStamps, avgChannelData);
 
     if (allResults.isEmpty()) {
-        appendLog(phaseName + ": 鏈?epoch 鏈娴嬪埌浜嬩欢");
+        appendLog(phaseName + ": 本 epoch 未检测到事件");
         return;
     }
 
-    // 3) phase->triggerSource 涓嶅彉锛氫綘璇粹€滈厤缃?4/25锛岃Е鍙?/1鈥濓紝閭ｈ繖閲岀户缁部鐢?
-    //    浠嶇劧锛歅haseA 鍒烘縺鑰侀紶B 鐢?triggerSource=1锛汸haseB 鍒烘縺鑰侀紶A 鐢?triggerSource=0
     const int triggerSource = (phaseIndex == 0) ? 1 : 0;
 
-    // 4) 鎸?a/b 鍖哄煙鍐冲畾鍒烘縺鐢垫瀬鍚嶅瓧锛堝叧閿細涓€鏉″钩鍧囦俊鍙峰搴斾竴鏍瑰埡婵€鐢垫瀬锛?
     auto electrodeForAvgIndex = [&](int avgIndex) -> QString {
-        if (phaseIndex == 0) { // A -> 鍒烘縺 B
+        if (phaseIndex == 0) {
             return (avgIndex == 0) ? kStim_B_a : kStim_B_b;
-        } else {               // B -> 鍒烘縺 A
+        } else {
             return (avgIndex == 0) ? kStim_A_a : kStim_A_b;
         }
     };
@@ -817,7 +810,6 @@ void MainWindow::onABEpochReady(int phaseIndex,
     const uint32_t epochStartTs = timeStamps.first();
     const double fs = (m_sampleRate > 0.0 ? m_sampleRate : 30000.0);
 
-    // 5) 鍙繚鐣欓渶瑕佸埡婵€鐨勫€欓€?
     QVector<ABAlgorithm::Result> candidates;
     candidates.reserve(allResults.size());
     for (const auto &r : allResults) {
@@ -826,11 +818,10 @@ void MainWindow::onABEpochReady(int phaseIndex,
         candidates.push_back(r);
     }
     if (candidates.isEmpty()) {
-        appendLog(phaseName + ": 鏃犻渶鍒烘縺");
+        appendLog(phaseName + ": 无需刺激");
         return;
     }
 
-    // 寮哄害鏈€澶?10 涓?
     std::sort(candidates.begin(), candidates.end(),
               [](const ABAlgorithm::Result &a, const ABAlgorithm::Result &b) {
                   return a.spikeAmplitude_uV > b.spikeAmplitude_uV;
@@ -838,7 +829,6 @@ void MainWindow::onABEpochReady(int phaseIndex,
     const int maxStimPerEpoch = 10;
     if (candidates.size() > maxStimPerEpoch) candidates.resize(maxStimPerEpoch);
 
-    // 鎸夋椂闂存帓搴?
     std::sort(candidates.begin(), candidates.end(),
               [](const ABAlgorithm::Result &a, const ABAlgorithm::Result &b) {
                   return a.triggerTime < b.triggerTime;
@@ -852,8 +842,7 @@ void MainWindow::onABEpochReady(int phaseIndex,
     for (int i = 0; i < candidates.size(); ++i) {
         const auto &r = candidates[i];
 
-        const QString targetElectrode = electrodeForAvgIndex(r.channelIndex); // 0->a鍖虹數鏋? 1->b鍖虹數鏋?
-
+        const QString targetElectrode = electrodeForAvgIndex(r.channelIndex);
         int pulses = (r.suggestedNumPulses > 0) ? r.suggestedNumPulses : 1;
 
         double offsetSec = 0.0;
@@ -867,9 +856,9 @@ void MainWindow::onABEpochReady(int phaseIndex,
         it.offsetMs = offsetMs;
         it.amp_uA = r.suggestedAmplitude_uA;
         it.pulses = pulses;
-        it.ch = r.channelIndex;          // 杩欓噷鐜板湪鏄?0/1锛屼唬琛?a骞冲潎/b骞冲潎
+        it.ch = r.channelIndex;
         it.spike_uV = r.spikeAmplitude_uV;
-        it.electrode = targetElectrode;  // 鍏抽敭锛氭瘡鏉′簨浠跺啓鍏ュ搴旂殑鍒烘縺鐢垫瀬
+        it.electrode = targetElectrode;
         it.fired = false;
         items.push_back(it);
 
@@ -894,14 +883,13 @@ void MainWindow::onABEpochReady(int phaseIndex,
         ensureTimelineVisible();
     }
 
-    appendLog(QString("%1: epochId=%2 璁″垝鍒烘縺=%3")
+    appendLog(QString("%1: epochId=%2 计划刺激=%3")
                   .arg(phaseName).arg(epochId).arg(items.size()));
 }
 
-
 void MainWindow::handleError(const QString &msg)
 {
-    appendLog(QStringLiteral("閿欒锛?) + msg);
+    appendLog(QStringLiteral("错误：") + msg);
 }
 
 void MainWindow::handleLog(const QString &msg)
