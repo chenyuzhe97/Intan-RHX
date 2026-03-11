@@ -149,8 +149,9 @@ void Controller::setStimSequenceParameters(ElectrodeParameters *parameters)
     int commandSequenceLength = 0;
     std::vector<unsigned int> commandList;
 
-    const int firstPhaseMagnitude = qRound(parameters->firstPhaseAmplitude / currentstep);
-    const int secondPhaseMagnitude = qRound(parameters->secondPhaseAmplitude / currentstep);
+    // Preserve the project's custom stimulation amplitude unit conversion.
+    const int firstPhaseMagnitude = qRound(parameters->firstPhaseAmplitude / currentstep / 1000.0);
+    const int secondPhaseMagnitude = qRound(parameters->secondPhaseAmplitude / currentstep / 1000.0);
 
     int posMag = 0;
     int negMag = 0;
