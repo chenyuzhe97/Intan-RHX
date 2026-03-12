@@ -3,8 +3,9 @@
 #include <QVector>
 #include <QTimer>
 #include <QMutex>
-#include "dsp_biquad.h"
+#include <QRect>
 
+#include "dsp_biquad.h"
 
 class StackedWaveWidget : public QWidget
 {
@@ -19,6 +20,9 @@ public:
     void setTitle(const QString &t) { m_title = t; }
     void setGainUv(double halfRangeUv);              // ±uV
     void setWindowSec(double sec);                   // 显示时窗（秒）
+
+signals:
+    void selectedChannelChanged(int ch);
 
 public slots:
     void pushBlock(const QVector<uint32_t> &timeStamps,
@@ -59,10 +63,42 @@ private:
         }
     };
 
-    enum class ViewMode { Stacked, Single };
+    struct ViewRange {
+        int nAvail = 0;
+        int nWin = 0;
+        int start = 0;
+        int end = 0;
+        bool valid = false;
+    };
 
-    int pickChannelFromY(int y, int padT, int plotH) const;
+    struct ChannelStats {
+        float minUv = 0.0f;
+        float maxUv = 0.0f;
+        float rmsUv = 0.0f;
+        float p2pUv = 0.0f;
+        bool valid = false;
+    };
+
+    enum class ViewMode { Overview, Single };
+
+    int pickChannelAtPos(const QPoint &pos, const QRect &contentRect) const;
+    int overviewColumnCount(const QRect &contentRect) const;
+    QRect overviewCardRect(const QRect &contentRect, int ch) const;
+    ViewRange currentViewRangeLocked() const;
+    ChannelStats computeStatsLocked(const Ring &ring, const ViewRange &range) const;
+    void drawHeader(QPainter &p, const QRect &rect) const;
+    void drawOverview(QPainter &p, const QRect &contentRect, const ViewRange &range) const;
+    void drawSingle(QPainter &p, const QRect &contentRect, const ViewRange &range) const;
+    void drawWaveform(QPainter &p,
+                      const QRect &plotRect,
+                      const Ring &ring,
+                      const ViewRange &range,
+                      const QColor &color,
+                      double gainUv,
+                      int zeroY) const;
+    void drawTimeRuler(QPainter &p, const QRect &plotRect) const;
     void resetView();
+    void autoScaleSelectedLocked(const ViewRange &range);
 
 private:
     QVector<Ring> m_rings;
@@ -82,9 +118,10 @@ private:
     bool m_hasData = false;
 
     // 交互状态
-    ViewMode m_mode = ViewMode::Stacked;
+    ViewMode m_mode = ViewMode::Overview;
     int m_selectedCh = 0;        // 点击选中的通道
     int m_focusCh = -1;          // 单通道模式的通道（>=0）
+    int m_hoverCh = -1;
 
     // 平移（仅单通道模式生效）：向左看历史 = panSamples 增加
     int  m_panSamples = 0;
@@ -124,5 +161,4 @@ private:
     // 每通道滤波状态（notch + main）
     QVector<Biquad> m_bqNotch;
     QVector<Biquad> m_bqMain;
-
 };

@@ -11,6 +11,7 @@
 #include <QSpinBox>
 #include <QMessageBox>
 #include <QRegularExpression>
+#include <QTextDocument>
 
 static StackedWaveWidget::FilterSettings buildFilterSettingsFromUi(
     QCheckBox *chkFilter, QComboBox *cmbType,
@@ -99,8 +100,10 @@ MainWindow::MainWindow(QWidget *parent)
     m_fftB = new FftWindow(m_viewB);
     m_fftA->setFftSize(2048);
     m_fftB->setFftSize(2048);
-    m_fftA->setMaxFreq(5000);
+        m_fftA->setMaxFreq(5000);
     m_fftB->setMaxFreq(5000);
+    connect(m_viewA, &StackedWaveWidget::selectedChannelChanged, m_fftA, &FftWindow::setChannel);
+    connect(m_viewB, &StackedWaveWidget::selectedChannelChanged, m_fftB, &FftWindow::setChannel);
     m_fftA->hide();
     m_fftB->hide();
 
@@ -122,8 +125,80 @@ MainWindow::~MainWindow()
 
 void MainWindow::setupUi()
 {
+    setWindowTitle(tr("RHX Closed-Loop Workbench"));
+    resize(1680, 980);
+    setMinimumSize(1320, 860);
+    setStyleSheet(R"(
+        QMainWindow {
+            background: #0b1116;
+        }
+        QWidget {
+            color: #dce8ef;
+            font-size: 12px;
+        }
+        QLabel {
+            color: #c8d6de;
+        }
+        QPushButton {
+            background: #16232d;
+            border: 1px solid #29404f;
+            border-radius: 8px;
+            padding: 8px 14px;
+            min-height: 18px;
+        }
+        QPushButton:hover {
+            background: #1c2d39;
+            border-color: #44c8b2;
+        }
+        QPushButton:pressed {
+            background: #102028;
+        }
+        QPlainTextEdit {
+            background: #10171d;
+            border: 1px solid #223542;
+            border-radius: 12px;
+            padding: 6px;
+            selection-background-color: #1a7f71;
+        }
+        QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+            background: #101920;
+            border: 1px solid #29404f;
+            border-radius: 7px;
+            padding: 4px 8px;
+            min-height: 20px;
+        }
+        QGroupBox {
+            border: 1px solid #233541;
+            border-radius: 12px;
+            margin-top: 10px;
+            padding-top: 12px;
+            background: #0f161d;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 12px;
+            padding: 0 6px;
+            color: #8fb8c3;
+        }
+        QDockWidget {
+            color: #dce8ef;
+        }
+        QDockWidget::title {
+            text-align: left;
+            background: #111b24;
+            padding: 8px 12px;
+            border-bottom: 1px solid #223542;
+        }
+        QSplitter::handle {
+            background: #11202a;
+            width: 8px;
+        }
+    )");
+
     m_central = new QWidget(this);
     m_layout  = new QVBoxLayout(m_central);
+    m_layout->setContentsMargins(16, 16, 16, 16);
+    m_layout->setSpacing(12);
 
     // ===== 顶部按钮行 =====
     {
@@ -272,22 +347,28 @@ void MainWindow::setupUi()
     m_viewA->configure(m_channelsPerStream, m_sampleRate, m_visibleWindowSec, m_maxWindowSec);
     m_viewB->configure(m_channelsPerStream, m_sampleRate, m_visibleWindowSec, m_maxWindowSec);
 
-    m_viewA->setTitle("Stream0 (A) - 16ch  (dblclick=single, wheel=gain, Ctrl+wheel=time, Shift+drag=pan)");
-    m_viewB->setTitle("Stream2 (B) - 16ch  (dblclick=single, wheel=gain, Ctrl+wheel=time, Shift+drag=pan)");
+    m_viewA->setTitle("Stream A monitor  |  click select / dblclick focus / right-click tools");
+    m_viewB->setTitle("Stream B monitor  |  click select / dblclick focus / right-click tools");
 
     m_viewA->setGainUv(m_spinGainA->value());
     m_viewB->setGainUv(m_spinGainB->value());
 
-    m_split->addWidget(m_viewA);
+        m_split->addWidget(m_viewA);
     m_split->addWidget(m_viewB);
+    m_split->setChildrenCollapsible(false);
+    m_split->setHandleWidth(10);
+    m_split->setOpaqueResize(false);
     m_split->setStretchFactor(0, 1);
     m_split->setStretchFactor(1, 1);
 
     m_layout->addWidget(m_split, 3);
 
     // ===== 日志 =====
-    m_logView  = new QPlainTextEdit(this);
+        m_logView  = new QPlainTextEdit(this);
+    m_logView->setObjectName("logView");
     m_logView->setReadOnly(true);
+    m_logView->setMinimumHeight(170);
+    m_logView->document()->setMaximumBlockCount(3000);
     m_layout->addWidget(m_logView, 1);
 
     setCentralWidget(m_central);

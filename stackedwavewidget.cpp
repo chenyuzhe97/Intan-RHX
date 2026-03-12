@@ -1,18 +1,21 @@
 #include "stackedwavewidget.h"
 
-#include <QPainter>
-#include <QMouseEvent>
-#include <QWheelEvent>
 #include <QContextMenuEvent>
+#include <QLinearGradient>
+#include <QMenu>
+#include <QMouseEvent>
+#include <QPainter>
+#include <QWheelEvent>
 #include <QtMath>
+
+#include <cmath>
 
 StackedWaveWidget::StackedWaveWidget(QWidget *parent) : QWidget(parent)
 {
-    setMinimumSize(420, 360);
+    setMinimumSize(560, 420);
     setMouseTracking(true);
 
     m_repaint.setInterval(33); // ~30 fps
-    // 每33ms 触发一次，触发重载后的update代码
     connect(&m_repaint, &QTimer::timeout, this, QOverload<>::of(&StackedWaveWidget::update));
     m_repaint.start();
 }
@@ -33,12 +36,13 @@ void StackedWaveWidget::configure(int channels, double sampleRateHz, double wind
         m_bqMain[ch].reset();
     }
 
-    // 预分配足够的 ring buffer 容量（允许你 Ctrl+滚轮 放大时间窗）
     const int cap = qMax(2048, int(qCeil((m_windowSecMax + 0.5) * m_fs)));
     m_rings.resize(m_channels);
     for (int ch=0; ch<m_channels; ++ch) m_rings[ch].init(cap);
 
     m_hasData = false;
+    m_selectedCh = 0;
+    m_hoverCh = -1;
     resetView();
 }
 
@@ -52,7 +56,6 @@ void StackedWaveWidget::setWindowSec(double sec)
 {
     QMutexLocker lk(&m_mtx);
     m_windowSec = qBound(m_windowSecMin, sec, m_windowSecMax);
-    // 注意：ring buffer 容量已经按 maxWindowSec 预分配，不需要重配
 }
 
 void StackedWaveWidget::pushBlock(const QVector<uint32_t> &timeStamps,
@@ -68,7 +71,6 @@ void StackedWaveWidget::pushBlock(const QVector<uint32_t> &timeStamps,
     for (int i=0; i<N; ++i) {
         for (int ch=0; ch<C; ++ch) {
             if (i >= channelData[ch].size()) continue;
-            // ADC -> uV（你之前的换算）
             float uV = float((double(channelData[ch][i]) - 32768.0) * 0.195);
 
             if (m_filt.notchEnabled) uV = m_bqNotch[ch].process(uV);
@@ -81,240 +83,461 @@ void StackedWaveWidget::pushBlock(const QVector<uint32_t> &timeStamps,
     m_hasData = true;
 }
 
-int StackedWaveWidget::pickChannelFromY(int y, int padT, int plotH) const
+int StackedWaveWidget::overviewColumnCount(const QRect &contentRect) const
 {
-    if (plotH <= 0) return 0;
-    const int yy = qBound(0, y - padT, plotH - 1);
-    const double chH = double(plotH) / double(m_channels);
-    int ch = int(yy / chH);
-    ch = qBound(0, ch, m_channels - 1);
-    return ch;
+    return (contentRect.width() >= 720) ? 2 : 1;
+}
+
+QRect StackedWaveWidget::overviewCardRect(const QRect &contentRect, int ch) const
+{
+    const int columns = overviewColumnCount(contentRect);
+    const int rows = qMax(1, (m_channels + columns - 1) / columns);
+    const int gap = 12;
+    const int cellW = (contentRect.width() - gap * (columns - 1)) / columns;
+    const int cellH = (contentRect.height() - gap * (rows - 1)) / rows;
+
+    const int row = ch / columns;
+    const int col = ch % columns;
+    const int x = contentRect.left() + col * (cellW + gap);
+    const int y = contentRect.top() + row * (cellH + gap);
+    return QRect(x, y, cellW, cellH);
+}
+
+int StackedWaveWidget::pickChannelAtPos(const QPoint &pos, const QRect &contentRect) const
+{
+    if (m_mode == ViewMode::Single) {
+        return qBound(0, (m_focusCh >= 0 ? m_focusCh : m_selectedCh), m_channels - 1);
+    }
+
+    for (int ch = 0; ch < m_channels; ++ch) {
+        if (overviewCardRect(contentRect, ch).contains(pos)) {
+            return ch;
+        }
+    }
+    return -1;
+}
+
+StackedWaveWidget::ViewRange StackedWaveWidget::currentViewRangeLocked() const
+{
+    ViewRange range;
+    if (m_rings.isEmpty()) return range;
+
+    range.nAvail = m_rings[0].size();
+    range.nWin = qMin(range.nAvail, int(m_windowSec * m_fs));
+    if (range.nWin < 2) return range;
+
+    int end = range.nAvail - 1;
+    if (m_mode == ViewMode::Single) {
+        end = range.nAvail - 1 - m_panSamples;
+    }
+    end = qBound(range.nWin - 1, end, range.nAvail - 1);
+
+    range.end = end;
+    range.start = qMax(0, range.end - (range.nWin - 1));
+    range.valid = true;
+    return range;
+}
+
+StackedWaveWidget::ChannelStats StackedWaveWidget::computeStatsLocked(const Ring &ring, const ViewRange &range) const
+{
+    ChannelStats stats;
+    if (!range.valid) return stats;
+
+    float vmin = ring.atFromOldest(range.start);
+    float vmax = vmin;
+    double sumSq = 0.0;
+
+    for (int i = range.start; i <= range.end; ++i) {
+        const float v = ring.atFromOldest(i);
+        vmin = qMin(vmin, v);
+        vmax = qMax(vmax, v);
+        sumSq += double(v) * double(v);
+    }
+
+    stats.minUv = vmin;
+    stats.maxUv = vmax;
+    stats.p2pUv = vmax - vmin;
+    stats.rmsUv = float(std::sqrt(sumSq / double(range.end - range.start + 1)));
+    stats.valid = true;
+    return stats;
+}
+
+void StackedWaveWidget::drawHeader(QPainter &p, const QRect &rect) const
+{
+    QRect headerRect = rect.adjusted(10, 10, -10, -rect.height() + 44);
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(QPen(QColor(43, 73, 88), 1));
+    p.setBrush(QColor(11, 19, 27, 220));
+    p.drawRoundedRect(headerRect, 12, 12);
+
+    QFont titleFont = p.font();
+    titleFont.setBold(true);
+    titleFont.setPointSize(titleFont.pointSize() + 1);
+    p.setFont(titleFont);
+    p.setPen(QColor(231, 238, 243));
+    p.drawText(headerRect.adjusted(14, 0, -180, 0), Qt::AlignVCenter | Qt::AlignLeft, m_title);
+
+    p.setFont(QFont(titleFont.family(), titleFont.pointSize() - 1, QFont::Medium));
+    const QString modeText = (m_mode == ViewMode::Overview)
+        ? QStringLiteral("Overview cards")
+        : QStringLiteral("Focus CH%1").arg(m_focusCh + 1, 2, 10, QChar('0'));
+
+    QString filterText = QStringLiteral("RAW");
+    if (m_filt.enabled && m_filt.type == FilterSettings::Type::BandPass) {
+        filterText = QStringLiteral("BP %1-%2 Hz")
+                         .arg(m_filt.bp_low_hz, 0, 'f', 0)
+                         .arg(m_filt.bp_high_hz, 0, 'f', 0);
+    } else if (m_filt.enabled && m_filt.type == FilterSettings::Type::LowPass) {
+        filterText = QStringLiteral("LP %1 Hz").arg(m_filt.lp_hz, 0, 'f', 0);
+    } else if (m_filt.enabled && m_filt.type == FilterSettings::Type::HighPass) {
+        filterText = QStringLiteral("HP %1 Hz").arg(m_filt.hp_hz, 0, 'f', 0);
+    }
+    if (m_filt.notchEnabled) {
+        filterText += QStringLiteral(" + Notch %1").arg(m_filt.notch_hz, 0, 'f', 0);
+    }
+
+    const QString meta = QStringLiteral("%1   |   CH%2   |   %3 s   |   ±%4 µV   |   %5")
+                             .arg(modeText)
+                             .arg(m_selectedCh + 1, 2, 10, QChar('0'))
+                             .arg(m_windowSec, 0, 'f', 2)
+                             .arg(m_gainUv, 0, 'f', 0)
+                             .arg(filterText);
+
+    p.setPen(QColor(139, 169, 181));
+    p.drawText(headerRect.adjusted(320, 0, -14, 0), Qt::AlignVCenter | Qt::AlignRight, meta);
+    p.restore();
+}
+
+void StackedWaveWidget::drawWaveform(QPainter &p,
+                                     const QRect &plotRect,
+                                     const Ring &ring,
+                                     const ViewRange &range,
+                                     const QColor &color,
+                                     double gainUv,
+                                     int zeroY) const
+{
+    if (!range.valid || plotRect.width() <= 2 || plotRect.height() <= 2) return;
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, false);
+    p.setPen(color);
+
+    const double yScale = (plotRect.height() * 0.44) / qMax(1.0, gainUv);
+    for (int x = 0; x < plotRect.width(); ++x) {
+        int i0 = range.start + int(double(x) / double(plotRect.width()) * (range.end - range.start + 1));
+        int i1 = range.start + int(double(x + 1) / double(plotRect.width()) * (range.end - range.start + 1));
+        if (i1 <= i0) i1 = i0 + 1;
+        if (i1 > range.end + 1) i1 = range.end + 1;
+
+        float vmin = ring.atFromOldest(i0);
+        float vmax = vmin;
+        for (int i = i0 + 1; i < i1; ++i) {
+            const float v = ring.atFromOldest(i);
+            vmin = qMin(vmin, v);
+            vmax = qMax(vmax, v);
+        }
+
+        const int y1 = zeroY - int(vmin * yScale);
+        const int y2 = zeroY - int(vmax * yScale);
+        p.drawLine(plotRect.left() + x, y1, plotRect.left() + x, y2);
+    }
+    p.restore();
+}
+
+void StackedWaveWidget::drawTimeRuler(QPainter &p, const QRect &plotRect) const
+{
+    p.save();
+    p.setPen(QColor(86, 112, 125));
+
+    const int ticks = 5;
+    for (int i = 0; i <= ticks; ++i) {
+        const double t = m_windowSec * double(i) / double(ticks);
+        const int x = plotRect.left() + int(double(plotRect.width()) * double(i) / double(ticks));
+        p.drawLine(x, plotRect.bottom() + 2, x, plotRect.bottom() + 7);
+        p.drawText(x - 16, plotRect.bottom() + 20, QString::number(t, 'f', 1) + " s");
+    }
+    p.restore();
+}
+
+void StackedWaveWidget::drawOverview(QPainter &p, const QRect &contentRect, const ViewRange &range) const
+{
+    const QColor cardFill(16, 26, 36);
+    const QColor headerFill(21, 34, 46);
+    const QColor border(34, 54, 66);
+    const QColor borderHover(52, 177, 160);
+    const QColor borderSelected(240, 191, 76);
+    const QColor wave(50, 214, 189);
+    const QColor waveSelected(255, 207, 92);
+    const QColor waveHover(110, 226, 214);
+
+    for (int ch = 0; ch < m_channels; ++ch) {
+        const QRect outer = overviewCardRect(contentRect, ch);
+        const QRect headerRect = outer.adjusted(10, 10, -10, -outer.height() + 30);
+        const QRect plotRect = outer.adjusted(12, 36, -12, -14);
+
+        const bool isSelected = (ch == m_selectedCh);
+        const bool isHover = (ch == m_hoverCh);
+        const QColor edge = isSelected ? borderSelected : (isHover ? borderHover : border);
+
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(edge, isSelected ? 2.0 : 1.2));
+        p.setBrush(cardFill);
+        p.drawRoundedRect(outer, 14, 14);
+
+        p.setPen(Qt::NoPen);
+        p.setBrush(headerFill);
+        p.drawRoundedRect(QRect(outer.left(), outer.top(), outer.width(), 34), 14, 14);
+        p.drawRect(QRect(outer.left(), outer.top() + 18, outer.width(), 16));
+
+        p.setPen(QColor(236, 242, 246));
+        QFont chFont = p.font();
+        chFont.setBold(true);
+        p.setFont(chFont);
+        p.drawText(headerRect.adjusted(0, 0, -110, 0), Qt::AlignLeft | Qt::AlignVCenter,
+                   QStringLiteral("CH %1").arg(ch + 1, 2, 10, QChar('0')));
+
+        const ChannelStats stats = computeStatsLocked(m_rings[ch], range);
+        p.setFont(QFont(chFont.family(), qMax(8, chFont.pointSize() - 1)));
+        p.setPen(QColor(156, 186, 199));
+        const QString statsText = stats.valid
+            ? QStringLiteral("RMS %1   P2P %2")
+                  .arg(stats.rmsUv, 0, 'f', 0)
+                  .arg(stats.p2pUv, 0, 'f', 0)
+            : QStringLiteral("Waiting for data");
+        p.drawText(headerRect.adjusted(86, 0, 0, 0), Qt::AlignRight | Qt::AlignVCenter, statsText);
+
+        p.setPen(QColor(42, 61, 74));
+        p.setBrush(QColor(11, 18, 24));
+        p.drawRoundedRect(plotRect, 10, 10);
+
+        p.setClipRect(plotRect.adjusted(1, 1, -1, -1));
+        p.setPen(QColor(36, 51, 62));
+        for (int g = 1; g <= 3; ++g) {
+            const int y = plotRect.top() + plotRect.height() * g / 4;
+            p.drawLine(plotRect.left() + 6, y, plotRect.right() - 6, y);
+        }
+        for (int g = 1; g <= 4; ++g) {
+            const int x = plotRect.left() + plotRect.width() * g / 5;
+            p.drawLine(x, plotRect.top() + 6, x, plotRect.bottom() - 6);
+        }
+        p.setPen(QColor(64, 92, 104));
+        p.drawLine(plotRect.left() + 6, plotRect.center().y(), plotRect.right() - 6, plotRect.center().y());
+
+        const QColor curve = isSelected ? waveSelected : (isHover ? waveHover : wave);
+        drawWaveform(p, plotRect.adjusted(6, 6, -6, -6), m_rings[ch], range, curve, m_gainUv, plotRect.center().y());
+        p.setClipping(false);
+
+        p.setPen(QColor(110, 138, 151));
+        p.setFont(QFont(chFont.family(), qMax(8, chFont.pointSize() - 2)));
+        p.drawText(plotRect.adjusted(8, 0, -8, -4), Qt::AlignBottom | Qt::AlignLeft,
+                   QStringLiteral("±%1 µV").arg(m_gainUv, 0, 'f', 0));
+        p.drawText(plotRect.adjusted(8, 0, -8, -4), Qt::AlignBottom | Qt::AlignRight,
+                   QStringLiteral("%1 s").arg(m_windowSec, 0, 'f', 2));
+        p.restore();
+    }
+}
+
+void StackedWaveWidget::drawSingle(QPainter &p, const QRect &contentRect, const ViewRange &range) const
+{
+    const int ch = qBound(0, (m_focusCh >= 0 ? m_focusCh : m_selectedCh), m_channels - 1);
+    const QRect cardRect = contentRect;
+    const QRect infoRect = cardRect.adjusted(16, 12, -16, -cardRect.height() + 40);
+    const QRect plotRect = cardRect.adjusted(16, 50, -16, -34);
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(QPen(QColor(240, 191, 76), 1.6));
+    p.setBrush(QColor(16, 25, 34));
+    p.drawRoundedRect(cardRect, 18, 18);
+
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(22, 35, 47));
+    p.drawRoundedRect(QRect(cardRect.left(), cardRect.top(), cardRect.width(), 44), 18, 18);
+    p.drawRect(QRect(cardRect.left(), cardRect.top() + 22, cardRect.width(), 22));
+
+    QFont titleFont = p.font();
+    titleFont.setBold(true);
+    titleFont.setPointSize(titleFont.pointSize() + 1);
+    p.setFont(titleFont);
+    p.setPen(QColor(242, 246, 249));
+    p.drawText(infoRect.adjusted(0, 0, -200, 0), Qt::AlignLeft | Qt::AlignVCenter,
+               QStringLiteral("Channel %1 Focus").arg(ch + 1, 2, 10, QChar('0')));
+
+    const ChannelStats stats = computeStatsLocked(m_rings[ch], range);
+    p.setFont(QFont(titleFont.family(), qMax(9, titleFont.pointSize() - 1)));
+    p.setPen(QColor(156, 186, 199));
+    const QString statText = stats.valid
+        ? QStringLiteral("RMS %1   P2P %2   Pan %3 samples")
+              .arg(stats.rmsUv, 0, 'f', 0)
+              .arg(stats.p2pUv, 0, 'f', 0)
+              .arg(m_panSamples)
+        : QStringLiteral("Waiting for data");
+    p.drawText(infoRect.adjusted(180, 0, 0, 0), Qt::AlignRight | Qt::AlignVCenter, statText);
+
+    p.setPen(QPen(QColor(55, 76, 88), 1));
+    p.setBrush(QColor(11, 18, 24));
+    p.drawRoundedRect(plotRect, 12, 12);
+
+    p.setClipRect(plotRect.adjusted(1, 1, -1, -1));
+    p.setPen(QColor(35, 50, 61));
+    for (int g = 1; g <= 4; ++g) {
+        const int x = plotRect.left() + plotRect.width() * g / 5;
+        p.drawLine(x, plotRect.top() + 8, x, plotRect.bottom() - 18);
+    }
+    for (int g = 1; g <= 4; ++g) {
+        const int y = plotRect.top() + plotRect.height() * g / 5;
+        p.drawLine(plotRect.left() + 8, y, plotRect.right() - 8, y);
+    }
+    p.setPen(QColor(76, 108, 121));
+    p.drawLine(plotRect.left() + 8, plotRect.center().y(), plotRect.right() - 8, plotRect.center().y());
+
+    drawWaveform(p, plotRect.adjusted(8, 8, -8, -24), m_rings[ch], range, QColor(255, 207, 92), m_gainUv, plotRect.center().y() - 8);
+    p.setClipping(false);
+
+    p.setPen(QColor(201, 213, 221));
+    p.setFont(QFont(titleFont.family(), qMax(9, titleFont.pointSize() - 2)));
+    p.drawText(plotRect.left() + 8, plotRect.top() + 18, QStringLiteral("+%1 µV").arg(m_gainUv, 0, 'f', 0));
+    p.drawText(plotRect.left() + 8, plotRect.center().y() - 4, QStringLiteral("0"));
+    p.drawText(plotRect.left() + 8, plotRect.bottom() - 26, QStringLiteral("-%1 µV").arg(m_gainUv, 0, 'f', 0));
+    drawTimeRuler(p, plotRect.adjusted(12, 0, -12, -20));
+    p.restore();
 }
 
 void StackedWaveWidget::resetView()
 {
-    m_mode = ViewMode::Stacked;
+    m_mode = ViewMode::Overview;
     m_focusCh = -1;
     m_panSamples = 0;
     m_dragging = false;
+    m_hoverCh = -1;
+}
+
+void StackedWaveWidget::autoScaleSelectedLocked(const ViewRange &range)
+{
+    if (!range.valid || m_rings.isEmpty()) return;
+
+    const int ch = qBound(0, (m_focusCh >= 0 ? m_focusCh : m_selectedCh), m_channels - 1);
+    float peakAbs = 0.0f;
+    for (int i = range.start; i <= range.end; ++i) {
+        peakAbs = qMax(peakAbs, std::abs(m_rings[ch].atFromOldest(i)));
+    }
+    if (peakAbs <= 1.0f) peakAbs = 1.0f;
+    m_gainUv = qBound(m_gainMin, double(peakAbs) * 1.35, m_gainMax);
 }
 
 void StackedWaveWidget::paintEvent(QPaintEvent*)
 {
     QPainter p(this);
-    p.setRenderHint(QPainter::Antialiasing, false);
-    p.fillRect(rect(), QColor(18,18,18));
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    QLinearGradient bg(0, 0, 0, height());
+    bg.setColorAt(0.0, QColor(10, 18, 26));
+    bg.setColorAt(1.0, QColor(5, 9, 13));
+    p.fillRect(rect(), bg);
+
+    const QRect contentRect = rect().adjusted(12, 54, -12, -14);
+    drawHeader(p, rect());
 
     QMutexLocker lk(&m_mtx);
-    if (!m_hasData || m_rings.isEmpty()) return;
+    if (m_rings.isEmpty() || contentRect.width() < 60 || contentRect.height() < 60) return;
 
-    const int W = width();
-    const int H = height();
-    const int padT = 22, padB = 14, padL = 52, padR = 10;
-
-    const int plotW = W - padL - padR;
-    const int plotH = H - padT - padB;
-    if (plotW < 20 || plotH < 20) return;
-
-    // 顶部标题 & 状态
-    p.setPen(QColor(235,235,235));
-    QString status;
-    if (m_mode == ViewMode::Stacked) {
-        status = QString("%1 | Stacked | sel=%2 | win=%3s | gain=±%4uV (wheel) | Ctrl+wheel time zoom | dblclick focus")
-                     .arg(m_title)
-                     .arg(m_selectedCh)
-                     .arg(m_windowSec,0,'f',2)
-                     .arg(m_gainUv,0,'f',0);
+    const ViewRange range = currentViewRangeLocked();
+    if (m_mode == ViewMode::Overview) {
+        drawOverview(p, contentRect, range);
     } else {
-        status = QString("%1 | Single ch=%2 | win=%3s | gain=±%4uV | Shift+drag pan | dblclick back")
-                     .arg(m_title)
-                     .arg(m_focusCh)
-                     .arg(m_windowSec,0,'f',2)
-                     .arg(m_gainUv,0,'f',0);
+        drawSingle(p, contentRect, range);
     }
-    p.drawText(6, 16, status);
-
-    // 通用：可用样本数
-    const int nAvail = m_rings[0].size();
-    const int nWin = qMin(nAvail, int(m_windowSec * m_fs));
-    if (nWin < 2) return;
-
-    auto calcStartEnd = [&](int &start, int &end){
-        end = nAvail - 1;
-        if (m_mode == ViewMode::Single) {
-            end = nAvail - 1 - m_panSamples;
-        }
-        end = qBound(nWin - 1, end, nAvail - 1);
-        start = end - (nWin - 1);
-        if (start < 0) start = 0;
-    };
-
-    int start = 0, end = 0;
-    calcStartEnd(start, end);
-
-    // 坐标轴/网格颜色
-    const QColor grid(45,45,45);
-    const QColor axis(70,70,70);
-    const QColor wave(0,210,170);
-    const QColor sel(255,200,0);
-
-    // ===== Stacked 模式 =====
-    if (m_mode == ViewMode::Stacked) {
-        const double chH = double(plotH) / double(m_channels);
-
-        // 网格
-        p.setPen(grid);
-        for (int ch=0; ch<m_channels; ++ch) {
-            int y = padT + int((ch + 0.5) * chH);
-            p.drawLine(padL, y, padL + plotW, y);
-        }
-        p.setPen(axis);
-        p.drawLine(padL, padT, padL, padT + plotH);
-
-        // 波形（按像素列 min/max）
-        for (int ch=0; ch<m_channels; ++ch) {
-            const auto &ring = m_rings[ch];
-            const int baseY = padT + int((ch + 0.5) * chH);
-            const double yScale = (chH * 0.45) / m_gainUv;
-
-            p.setPen(ch == m_selectedCh ? sel : wave);
-
-            for (int x=0; x<plotW; ++x) {
-                int i0 = start + int(double(x)     / double(plotW) * (end - start + 1));
-                int i1 = start + int(double(x + 1) / double(plotW) * (end - start + 1));
-                if (i1 <= i0) i1 = i0 + 1;
-                if (i1 > end + 1) i1 = end + 1;
-
-                float vmin = ring.atFromOldest(i0);
-                float vmax = vmin;
-                for (int i=i0+1; i<i1; ++i) {
-                    float v = ring.atFromOldest(i);
-                    if (v < vmin) vmin = v;
-                    if (v > vmax) vmax = v;
-                }
-
-                int y1 = baseY - int(vmin * yScale);
-                int y2 = baseY - int(vmax * yScale);
-                p.drawLine(padL + x, y1, padL + x, y2);
-            }
-        }
-        return;
-    }
-
-    // ===== Single 模式 =====
-    const int ch = (m_focusCh >= 0 ? m_focusCh : m_selectedCh);
-    const auto &ring = m_rings[qBound(0, ch, m_channels - 1)];
-
-    // 轴
-    p.setPen(axis);
-    p.drawRect(padL, padT, plotW, plotH);
-
-    // 中线
-    const int midY = padT + plotH/2;
-    p.setPen(grid);
-    p.drawLine(padL, midY, padL + plotW, midY);
-
-    // 波形（按像素列 min/max）
-    p.setPen(sel);
-    const double yScale = (plotH * 0.45) / m_gainUv;
-
-    for (int x=0; x<plotW; ++x) {
-        int i0 = start + int(double(x)     / double(plotW) * (end - start + 1));
-        int i1 = start + int(double(x + 1) / double(plotW) * (end - start + 1));
-        if (i1 <= i0) i1 = i0 + 1;
-        if (i1 > end + 1) i1 = end + 1;
-
-        float vmin = ring.atFromOldest(i0);
-        float vmax = vmin;
-        for (int i=i0+1; i<i1; ++i) {
-            float v = ring.atFromOldest(i);
-            if (v < vmin) vmin = v;
-            if (v > vmax) vmax = v;
-        }
-
-        int y1 = midY - int(vmin * yScale);
-        int y2 = midY - int(vmax * yScale);
-        p.drawLine(padL + x, y1, padL + x, y2);
-    }
-
-    // 左侧标尺文字
-    p.setPen(QColor(220,220,220));
-    p.drawText(6, padT + 14, QString("ch %1").arg(ch));
-    p.drawText(6, midY - 2, "0");
-    p.drawText(6, padT + 14 + 14, QString("+%1").arg(m_gainUv,0,'f',0));
-    p.drawText(6, padT + plotH - 4, QString("-%1").arg(m_gainUv,0,'f',0));
 }
 
 void StackedWaveWidget::mousePressEvent(QMouseEvent *e)
 {
-    const int padT = 22, padB = 14, padL = 52, padR = 10;
-    const int plotW = width() - padL - padR;
-    const int plotH = height() - padT - padB;
-    if (plotW < 20 || plotH < 20) return;
+    const QRect contentRect = rect().adjusted(12, 54, -12, -14);
+    if (e->button() != Qt::LeftButton || !contentRect.contains(e->pos())) return;
 
-    if (e->button() == Qt::LeftButton) {
-        // 选中通道
-        int ch = pickChannelFromY(e->pos().y(), padT, plotH);
-        {
-            QMutexLocker lk(&m_mtx);
+    int changedCh = -1;
+    {
+        QMutexLocker lk(&m_mtx);
+        const int ch = pickChannelAtPos(e->pos(), contentRect);
+        if (ch >= 0 && ch != m_selectedCh) {
             m_selectedCh = ch;
+            changedCh = ch;
         }
 
-        // 单通道模式下，Shift+拖拽 = 平移
         if (m_mode == ViewMode::Single && (e->modifiers() & Qt::ShiftModifier)) {
             m_dragging = true;
             m_dragStartX = e->pos().x();
             m_panSamplesAtDragStart = m_panSamples;
         }
-
-        update();
     }
+
+    if (changedCh >= 0) emit selectedChannelChanged(changedCh);
+    update();
 }
 
 void StackedWaveWidget::mouseDoubleClickEvent(QMouseEvent *e)
 {
     if (e->button() != Qt::LeftButton) return;
 
-    QMutexLocker lk(&m_mtx);
-    if (m_mode == ViewMode::Stacked) {
-        m_mode = ViewMode::Single;
-        m_focusCh = m_selectedCh;
-        m_panSamples = 0;
-    } else {
-        resetView();
+    int changedCh = -1;
+    {
+        QMutexLocker lk(&m_mtx);
+        if (m_mode == ViewMode::Overview) {
+            const QRect contentRect = rect().adjusted(12, 54, -12, -14);
+            const int ch = pickChannelAtPos(e->pos(), contentRect);
+            if (ch >= 0 && ch != m_selectedCh) {
+                m_selectedCh = ch;
+                changedCh = ch;
+            }
+            m_mode = ViewMode::Single;
+            m_focusCh = (ch >= 0) ? ch : m_selectedCh;
+            m_panSamples = 0;
+        } else {
+            resetView();
+        }
     }
+
+    if (changedCh >= 0) emit selectedChannelChanged(changedCh);
     update();
 }
 
 void StackedWaveWidget::mouseMoveEvent(QMouseEvent *e)
 {
-    if (!m_dragging) return;
+    const QRect contentRect = rect().adjusted(12, 54, -12, -14);
 
-    QMutexLocker lk(&m_mtx);
-    if (m_mode != ViewMode::Single) return;
+    if (m_dragging) {
+        QMutexLocker lk(&m_mtx);
+        if (m_mode != ViewMode::Single || m_rings.isEmpty()) return;
 
-    // 像素 -> 样本：拖拽多少像素换算为多少样本
-    const int padL = 52, padR = 10;
-    const int plotW = width() - padL - padR;
-    if (plotW < 10) return;
+        const int plotW = qMax(10, contentRect.width() - 32);
+        const int dx = e->pos().x() - m_dragStartX;
+        const int nAvail = m_rings[0].size();
+        const int nWin = qMin(nAvail, int(m_windowSec * m_fs));
+        const double samplesPerPixel = double(qMax(1, nWin)) / double(plotW);
+        const int deltaSamples = int(-dx * samplesPerPixel);
 
-    const int dx = e->pos().x() - m_dragStartX;
-    // 右拖：看更“新”的数据 => pan 减小；左拖：看更“旧”的数据 => pan 增大
-    const int nAvail = m_rings[0].size();
-    const int nWin = qMin(nAvail, int(m_windowSec * m_fs));
+        const int maxPan = qMax(0, nAvail - nWin);
+        m_panSamples = qBound(0, m_panSamplesAtDragStart + deltaSamples, maxPan);
+        update();
+        return;
+    }
 
-    // 1 像素对应的样本数（近似）
-    const double samplesPerPixel = double(nWin) / double(plotW);
-    int deltaSamples = int(-dx * samplesPerPixel);
+    bool needUpdate = false;
+    {
+        QMutexLocker lk(&m_mtx);
+        int hover = -1;
+        if (contentRect.contains(e->pos()) && m_mode == ViewMode::Overview) {
+            hover = pickChannelAtPos(e->pos(), contentRect);
+        }
+        if (hover != m_hoverCh) {
+            m_hoverCh = hover;
+            needUpdate = true;
+        }
+    }
 
-    int newPan = m_panSamplesAtDragStart + deltaSamples;
-
-    // pan 的上限：不能超出历史数据范围
-    const int maxPan = qMax(0, nAvail - nWin);
-    newPan = qBound(0, newPan, maxPan);
-    m_panSamples = newPan;
-
-    update();
+    if (needUpdate) update();
 }
 
 void StackedWaveWidget::mouseReleaseEvent(QMouseEvent *e)
@@ -330,7 +553,6 @@ void StackedWaveWidget::wheelEvent(QWheelEvent *e)
 
     const bool ctrl = (e->modifiers() & Qt::ControlModifier);
     const int steps = (e->angleDelta().y() / 120);
-
     if (steps == 0) return;
 
     auto applyZoom = [&](double &val, double factor, double vmin, double vmax){
@@ -340,17 +562,16 @@ void StackedWaveWidget::wheelEvent(QWheelEvent *e)
     };
 
     if (ctrl) {
-        // Ctrl+滚轮：时间窗 zoom
-        applyZoom(m_windowSec, 0.8, m_windowSecMin, m_windowSecMax);
+        applyZoom(m_windowSec, 0.82, m_windowSecMin, m_windowSecMax);
 
-        // 调整 pan，避免 zoom 后越界
-        const int nAvail = m_rings[0].size();
-        const int nWin = qMin(nAvail, int(m_windowSec * m_fs));
-        const int maxPan = qMax(0, nAvail - nWin);
-        m_panSamples = qBound(0, m_panSamples, maxPan);
+        if (!m_rings.isEmpty()) {
+            const int nAvail = m_rings[0].size();
+            const int nWin = qMin(nAvail, int(m_windowSec * m_fs));
+            const int maxPan = qMax(0, nAvail - nWin);
+            m_panSamples = qBound(0, m_panSamples, maxPan);
+        }
     } else {
-        // 滚轮：幅度 zoom
-        applyZoom(m_gainUv, 0.8, m_gainMin, m_gainMax);
+        applyZoom(m_gainUv, 0.82, m_gainMin, m_gainMax);
     }
 
     update();
@@ -358,9 +579,43 @@ void StackedWaveWidget::wheelEvent(QWheelEvent *e)
 
 void StackedWaveWidget::contextMenuEvent(QContextMenuEvent *e)
 {
-    Q_UNUSED(e);
-    QMutexLocker lk(&m_mtx);
-    resetView();
+    int changedCh = -1;
+    {
+        QMutexLocker lk(&m_mtx);
+        const QRect contentRect = rect().adjusted(12, 54, -12, -14);
+        const int ch = pickChannelAtPos(e->pos(), contentRect);
+        if (ch >= 0 && ch != m_selectedCh) {
+            m_selectedCh = ch;
+            changedCh = ch;
+        }
+    }
+    if (changedCh >= 0) emit selectedChannelChanged(changedCh);
+
+    QMenu menu(this);
+    QAction *focusAction = menu.addAction(m_mode == ViewMode::Overview ? tr("聚焦选中通道") : tr("返回总览"));
+    QAction *autoGainAction = menu.addAction(tr("自动匹配当前通道幅度"));
+    QAction *resetAction = menu.addAction(tr("重置视图"));
+
+    QAction *selected = menu.exec(e->globalPos());
+    if (!selected) return;
+
+    {
+        QMutexLocker lk(&m_mtx);
+        if (selected == focusAction) {
+            if (m_mode == ViewMode::Overview) {
+                m_mode = ViewMode::Single;
+                m_focusCh = m_selectedCh;
+                m_panSamples = 0;
+            } else {
+                resetView();
+            }
+        } else if (selected == autoGainAction) {
+            autoScaleSelectedLocked(currentViewRangeLocked());
+        } else if (selected == resetAction) {
+            resetView();
+        }
+    }
+
     update();
 }
 
@@ -369,7 +624,6 @@ void StackedWaveWidget::setFilterSettings(const FilterSettings &s)
     QMutexLocker lk(&m_mtx);
     m_filt = s;
 
-    // 重新设计滤波器并 reset 状态
     for (int ch=0; ch<m_channels; ++ch) {
         m_bqNotch[ch].reset();
         m_bqMain[ch].reset();
@@ -379,17 +633,16 @@ void StackedWaveWidget::setFilterSettings(const FilterSettings &s)
         }
 
         if (!m_filt.enabled || m_filt.type == FilterSettings::Type::Off) {
-            m_bqMain[ch] = Biquad(); // identity
+            m_bqMain[ch] = Biquad();
         } else if (m_filt.type == FilterSettings::Type::LowPass) {
             m_bqMain[ch] = Biquad::lowpass(m_fs, m_filt.lp_hz);
         } else if (m_filt.type == FilterSettings::Type::HighPass) {
             m_bqMain[ch] = Biquad::highpass(m_fs, m_filt.hp_hz);
         } else if (m_filt.type == FilterSettings::Type::BandPass) {
-            // 用中心频率 + Q 来近似一个中通
-            double f1 = qMax(1.0, m_filt.bp_low_hz);
-            double f2 = qMax(f1+1.0, m_filt.bp_high_hz);
-            double fc = std::sqrt(f1*f2);
-            double Q  = fc / (f2 - f1 + 1e-9);
+            const double f1 = qMax(1.0, m_filt.bp_low_hz);
+            const double f2 = qMax(f1 + 1.0, m_filt.bp_high_hz);
+            const double fc = std::sqrt(f1 * f2);
+            const double Q = fc / (f2 - f1 + 1e-9);
             m_bqMain[ch] = Biquad::bandpass(m_fs, fc, Q);
         }
     }
@@ -404,17 +657,14 @@ bool StackedWaveWidget::copySamplesForFft(int ch, int N, QVector<float> &out) co
     const int nAvail = m_rings[ch].size();
     if (nAvail < N) return false;
 
-    // 取“当前视窗末端”(考虑单通道 pan)
     int end = nAvail - 1;
     if (m_mode == ViewMode::Single) end = nAvail - 1 - m_panSamples;
     end = qBound(N-1, end, nAvail-1);
-    int start = end - (N - 1);
+    const int start = end - (N - 1);
 
     out.resize(N);
-    for (int i=0;i<N;i++){
+    for (int i = 0; i < N; ++i) {
         out[i] = m_rings[ch].atFromOldest(start + i);
     }
     return true;
 }
-
-
