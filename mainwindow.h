@@ -167,6 +167,7 @@ private:
     QSpinBox    *m_spinManualInterphaseUs = nullptr;
     bool         m_manualStimConfigApplied = false;
     bool         m_manualStimConfigDirty = true;
+    bool         m_manualStimLoadedForCurrentRun = false;
     QString      m_manualStimAppliedSummary;
     QString      m_manualStimAppliedSignature;
 

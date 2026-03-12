@@ -831,6 +831,7 @@ bool MainWindow::configureManualStimHardware(QString *summary)
         }
     }
 
+    m_manualStimLoadedForCurrentRun = true;
     return true;
 }
 
@@ -844,6 +845,7 @@ void MainWindow::applyManualStimConfigFromUi()
     if (!m_engine || !m_engine->rhx() || !m_engine->stimController()) {
         m_manualStimConfigApplied = false;
         m_manualStimConfigDirty = true;
+        m_manualStimLoadedForCurrentRun = false;
         m_manualStimAppliedSummary.clear();
         m_manualStimAppliedSignature.clear();
         appendLog(QStringLiteral("普通采集刺激参数已保存：%1（打开设备并开始普通采集后再点击应用）").arg(summary));
@@ -854,6 +856,7 @@ void MainWindow::applyManualStimConfigFromUi()
     if (!configureManualStimHardware(&appliedSummary)) {
         m_manualStimConfigApplied = false;
         m_manualStimConfigDirty = true;
+        m_manualStimLoadedForCurrentRun = false;
         m_manualStimAppliedSummary.clear();
         m_manualStimAppliedSignature.clear();
         return;
@@ -861,6 +864,7 @@ void MainWindow::applyManualStimConfigFromUi()
 
     m_manualStimConfigApplied = true;
     m_manualStimConfigDirty = false;
+    m_manualStimLoadedForCurrentRun = true;
     m_manualStimAppliedSummary = appliedSummary;
     m_manualStimAppliedSignature = signature;
     appendLog(QStringLiteral("普通采集刺激参数已应用：%1").arg(appliedSummary));
@@ -1157,6 +1161,7 @@ void MainWindow::onOpenDevice()
 
     m_manualStimConfigApplied = false;
     m_manualStimConfigDirty = true;
+    m_manualStimLoadedForCurrentRun = false;
     m_manualStimAppliedSummary.clear();
     m_manualStimAppliedSignature.clear();
     appendLog("打开设备成功");
@@ -1175,6 +1180,10 @@ void MainWindow::onStart()
     const bool wasClosedLoop = m_closedLoopExperimentActive;
     if (m_experiment) m_experiment->stop();
     m_closedLoopExperimentActive = false;
+
+    if (!wasAcquiring) {
+        m_manualStimLoadedForCurrentRun = false;
+    }
 
     if (m_dockTimeline) m_dockTimeline->hide();
     else if (m_timeline) m_timeline->hide();
@@ -1200,6 +1209,7 @@ void MainWindow::onStartClosedLoop()
 
     m_manualStimConfigApplied = false;
     m_manualStimConfigDirty = true;
+    m_manualStimLoadedForCurrentRun = false;
     m_manualStimAppliedSummary.clear();
     m_manualStimAppliedSignature.clear();
 
@@ -1315,15 +1325,20 @@ void MainWindow::onStimOnce()
 
     const QString summary = buildManualStimSummary();
     const QString signature = buildManualStimSignature();
-    const bool appliedMatchesCurrent = m_manualStimConfigApplied && (m_manualStimAppliedSignature == signature);
-    m_manualStimConfigDirty = !appliedMatchesCurrent;
-    if (!appliedMatchesCurrent) {
-        appendLog(QStringLiteral("普通采集刺激配置状态丢失，正在按当前参数重新应用"));
+    const bool signatureMatchesCurrent = (!m_manualStimAppliedSignature.isEmpty() && m_manualStimAppliedSignature == signature);
+    const bool needsReapply = (!m_manualStimLoadedForCurrentRun) || (!signatureMatchesCurrent);
+    m_manualStimConfigDirty = !signatureMatchesCurrent;
+    if (needsReapply) {
+        const QString reason = !m_manualStimLoadedForCurrentRun
+            ? QStringLiteral("检测到当前这轮普通采集尚未装载手动刺激配置，正在自动应用并继续触发")
+            : QStringLiteral("检测到手动刺激参数已调整，正在重新应用并继续触发");
+        appendLog(reason);
 
         QString appliedSummary;
         if (!configureManualStimHardware(&appliedSummary)) {
             m_manualStimConfigApplied = false;
             m_manualStimConfigDirty = true;
+            m_manualStimLoadedForCurrentRun = false;
             m_manualStimAppliedSummary.clear();
             m_manualStimAppliedSignature.clear();
             appendLog(QStringLiteral("普通采集刺激配置重新应用失败，本次未触发"));
@@ -1332,6 +1347,7 @@ void MainWindow::onStimOnce()
 
         m_manualStimConfigApplied = true;
         m_manualStimConfigDirty = false;
+        m_manualStimLoadedForCurrentRun = true;
         m_manualStimAppliedSummary = appliedSummary;
         m_manualStimAppliedSignature = signature;
         appendLog(QStringLiteral("普通采集刺激参数已重新应用：%1").arg(appliedSummary));
