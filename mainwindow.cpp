@@ -715,6 +715,18 @@ void MainWindow::saveManualStimConfig() const
     s.setValue("manual_stim/interphase_us", m_spinManualInterphaseUs->value());
 }
 
+void MainWindow::commitManualStimEdits()
+{
+    if (m_spinManualStimElectrode) m_spinManualStimElectrode->interpretText();
+    if (m_spinManualTriggerSource) m_spinManualTriggerSource->interpretText();
+    if (m_spinManualFirstAmp) m_spinManualFirstAmp->interpretText();
+    if (m_spinManualSecondAmp) m_spinManualSecondAmp->interpretText();
+    if (m_spinManualPulseCount) m_spinManualPulseCount->interpretText();
+    if (m_spinManualFirstPhaseUs) m_spinManualFirstPhaseUs->interpretText();
+    if (m_spinManualSecondPhaseUs) m_spinManualSecondPhaseUs->interpretText();
+    if (m_spinManualInterphaseUs) m_spinManualInterphaseUs->interpretText();
+}
+
 QString MainWindow::buildManualStimSummary() const
 {
     const QString electrodeName = manualStimElectrodeName();
@@ -727,6 +739,28 @@ QString MainWindow::buildManualStimSummary() const
     const int interphaseUs = m_spinManualInterphaseUs ? m_spinManualInterphaseUs->value() : 500;
 
     return QStringLiteral("电极=%1 trigger=%2 一相=%3 uA 二相=%4 uA 脉冲=%5 时宽=%6/%7 us 间隔=%8 us")
+        .arg(electrodeName)
+        .arg(triggerSource)
+        .arg(firstAmp)
+        .arg(secondAmp)
+        .arg(pulses)
+        .arg(firstPhaseUs)
+        .arg(secondPhaseUs)
+        .arg(interphaseUs);
+}
+
+QString MainWindow::buildManualStimSignature() const
+{
+    const QString electrodeName = manualStimElectrodeName();
+    const int triggerSource = m_spinManualTriggerSource ? m_spinManualTriggerSource->value() : 0;
+    const int firstAmp = m_spinManualFirstAmp ? m_spinManualFirstAmp->value() : 20;
+    const int secondAmp = m_spinManualSecondAmp ? m_spinManualSecondAmp->value() : 20;
+    const int pulses = m_spinManualPulseCount ? m_spinManualPulseCount->value() : 1;
+    const int firstPhaseUs = m_spinManualFirstPhaseUs ? m_spinManualFirstPhaseUs->value() : 500;
+    const int secondPhaseUs = m_spinManualSecondPhaseUs ? m_spinManualSecondPhaseUs->value() : 500;
+    const int interphaseUs = m_spinManualInterphaseUs ? m_spinManualInterphaseUs->value() : 500;
+
+    return QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8")
         .arg(electrodeName)
         .arg(triggerSource)
         .arg(firstAmp)
@@ -802,12 +836,16 @@ bool MainWindow::configureManualStimHardware(QString *summary)
 
 void MainWindow::applyManualStimConfigFromUi()
 {
+    commitManualStimEdits();
     saveManualStimConfig();
 
     const QString summary = buildManualStimSummary();
+    const QString signature = buildManualStimSignature();
     if (!m_engine || !m_engine->rhx() || !m_engine->stimController()) {
         m_manualStimConfigApplied = false;
+        m_manualStimConfigDirty = true;
         m_manualStimAppliedSummary.clear();
+        m_manualStimAppliedSignature.clear();
         appendLog(QStringLiteral("普通采集刺激参数已保存：%1（打开设备并开始普通采集后再点击应用）").arg(summary));
         return;
     }
@@ -815,13 +853,16 @@ void MainWindow::applyManualStimConfigFromUi()
     QString appliedSummary;
     if (!configureManualStimHardware(&appliedSummary)) {
         m_manualStimConfigApplied = false;
+        m_manualStimConfigDirty = true;
         m_manualStimAppliedSummary.clear();
+        m_manualStimAppliedSignature.clear();
         return;
     }
 
     m_manualStimConfigApplied = true;
     m_manualStimConfigDirty = false;
     m_manualStimAppliedSummary = appliedSummary;
+    m_manualStimAppliedSignature = signature;
     appendLog(QStringLiteral("普通采集刺激参数已应用：%1").arg(appliedSummary));
 }
 
@@ -1117,6 +1158,7 @@ void MainWindow::onOpenDevice()
     m_manualStimConfigApplied = false;
     m_manualStimConfigDirty = true;
     m_manualStimAppliedSummary.clear();
+    m_manualStimAppliedSignature.clear();
     appendLog("打开设备成功");
 }
 
@@ -1159,6 +1201,7 @@ void MainWindow::onStartClosedLoop()
     m_manualStimConfigApplied = false;
     m_manualStimConfigDirty = true;
     m_manualStimAppliedSummary.clear();
+    m_manualStimAppliedSignature.clear();
 
     if (m_closedLoopExperimentActive) {
         if (m_timeline) {
@@ -1252,6 +1295,7 @@ void MainWindow::onRecStop()
 
 void MainWindow::onStimOnce()
 {
+    commitManualStimEdits();
     saveManualStimConfig();
 
     if (!m_engine || !m_engine->rhx() || !m_engine->stimController()) {
@@ -1270,7 +1314,10 @@ void MainWindow::onStimOnce()
     }
 
     const QString summary = buildManualStimSummary();
-    if (!m_manualStimConfigApplied || m_manualStimConfigDirty) {
+    const QString signature = buildManualStimSignature();
+    const bool appliedMatchesCurrent = m_manualStimConfigApplied && (m_manualStimAppliedSignature == signature);
+    m_manualStimConfigDirty = !appliedMatchesCurrent;
+    if (!appliedMatchesCurrent) {
         appendLog(QStringLiteral("普通采集刺激参数已变更，请先点击\"应用刺激配置\"再触发"));
         return;
     }
