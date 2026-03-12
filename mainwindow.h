@@ -18,6 +18,7 @@
 
 #include "acquisitionengine.h"
 #include "abalgorithm.h"
+#include "abexperimentcoordinator.h"
 #include "experimentcontrollerab.h"
 
 #include "stackedwavewidget.h"
@@ -63,8 +64,7 @@ private:
     void appendLog(const QString &msg);
     void ensureTimelineVisible();
     void ensureFftVisible();
-    QVector<int> meanSelectedChannels(const QVector<QVector<int>> &channelData,
-                                      const QVector<int> &sel);
+    void syncExperimentRoutingConfig();
 
     // ===== Electrode config (GUI) =====
     void setupElectrodeConfigDock();
@@ -117,15 +117,14 @@ private:
     QPlainTextEdit *m_logView = nullptr;
 
     // ===== core =====
-    AcquisitionEngine      *m_engine     = nullptr;
-    ABAlgorithm            *m_abAlgo     = nullptr;
-    ExperimentControllerAB *m_experiment = nullptr;
+    AcquisitionEngine       *m_engine      = nullptr;
+    ABAlgorithm             *m_abAlgo      = nullptr;
+    ABExperimentCoordinator *m_coordinator = nullptr;
+    ExperimentControllerAB  *m_experiment  = nullptr;
 
     // ===== stim timeline + csv =====
     StimTimelineOverlay *m_timeline = nullptr;
     StimLogWriter       *m_stimLog  = nullptr;
-
-    int    m_epochCounter = 0;
 
     // ===== params =====
     double m_sampleRate = 30000.0;

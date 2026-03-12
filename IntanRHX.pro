@@ -26,6 +26,7 @@ INCLUDEPATH += $$PWD/GUI/Windows/
 
 
 SOURCES += main.cpp \
+    abexperimentcoordinator.cpp \
     Engine/API/Synthetic/playbackrhxcontroller.cpp \
     Engine/API/Synthetic/randomnumber.cpp \
     Engine/API/Synthetic/synthdatablockgenerator.cpp \
@@ -153,6 +154,7 @@ SOURCES += main.cpp \
 
 
 HEADERS += \
+    abexperimentcoordinator.h \
     Engine/API/Synthetic/playbackrhxcontroller.h \
     Engine/API/Synthetic/randomnumber.h \
     Engine/API/Synthetic/synthdatablockgenerator.h \

@@ -48,12 +48,17 @@ MainWindow::MainWindow(QWidget *parent)
     loadElectrodeConfig();
 
     // ===== core =====
-    m_engine     = new AcquisitionEngine(this);
-    m_experiment = new ExperimentControllerAB(m_engine, this);
-    m_abAlgo     = new ABAlgorithm(this);
+    m_engine      = new AcquisitionEngine(this);
+    m_experiment  = new ExperimentControllerAB(m_engine, this);
+    m_abAlgo      = new ABAlgorithm(this);
+    m_coordinator = new ABExperimentCoordinator(m_engine, m_abAlgo, this);
 
     if (m_abAlgo) {
         m_abAlgo->setSampleRateHz(m_sampleRate);
+    }
+    if (m_coordinator) {
+        m_coordinator->setSampleRateHz(m_sampleRate);
+        m_coordinator->setEpochDurationSec(colletion_time);
     }
 
     // ===== wave feed =====
@@ -69,6 +74,8 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(m_experiment, &ExperimentControllerAB::logMessage,
             this,         &MainWindow::handleLog);
+    connect(m_coordinator, &ABExperimentCoordinator::logMessage,
+            this,          &MainWindow::handleLog);
 
     connect(m_experiment, &ExperimentControllerAB::epochReady,
             this,         &MainWindow::onABEpochReady);
@@ -80,6 +87,12 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_stimLog = new StimLogWriter(this);
     m_stimLog->start(QDir::currentPath() + "/stim_log.csv");
+
+    if (m_coordinator) {
+        m_coordinator->setTimelineOverlay(m_timeline);
+        m_coordinator->setStimLogWriter(m_stimLog);
+        syncExperimentRoutingConfig();
+    }
 
     // ===== FFT windows =====
     m_fftA = new FftWindow(m_viewA);
@@ -333,34 +346,6 @@ void MainWindow::ensureFftVisible()
     if (m_fftB) m_fftB->raise();
 }
 
-QVector<int> MainWindow::meanSelectedChannels(const QVector<QVector<int> > &channelData, const QVector<int> &sel)
-{
-    if (channelData.isEmpty() || sel.isEmpty()) return {};
-
-    // 以第0通道长度作为基准（你这套采集一般各通道等长）
-    const int N = channelData[0].size();
-    if (N <= 0) return {};
-
-    QVector<int> out;
-    out.resize(N);
-
-    for (int i = 0; i < N; ++i) {
-        long long sum = 0;
-        int used = 0;
-        for (int ch : sel) {
-            if (ch < 0 || ch >= channelData.size()) continue;
-            const auto &v = channelData[ch];
-            if (i < 0 || i >= v.size()) continue;
-            sum += (long long)v[i];
-            used++;
-        }
-        if (used == 0) return {}; // sel 全无效就直接失败
-        out[i] = (int)std::llround((double)sum / (double)used);
-    }
-    return out;
-}
-
-
 QString MainWindow::formatChannels1Based(const QVector<int> &zeroBased)
 {
     QStringList parts;
@@ -535,6 +520,23 @@ void MainWindow::loadElectrodeConfig()
     kStim_B_b = QString("B%1").arg(m_spinStim_B_b->value());
 }
 
+void MainWindow::syncExperimentRoutingConfig()
+{
+    if (!m_coordinator) return;
+
+    ABExperimentCoordinator::RoutingConfig config;
+    config.senseA_a = kSense_A_a;
+    config.senseA_b = kSense_A_b;
+    config.senseB_a = kSense_B_a;
+    config.senseB_b = kSense_B_b;
+    config.stimA_a = kStim_A_a;
+    config.stimA_b = kStim_A_b;
+    config.stimB_a = kStim_B_a;
+    config.stimB_b = kStim_B_b;
+
+    m_coordinator->setRoutingConfig(config);
+}
+
 void MainWindow::saveElectrodeConfig() const
 {
     if (!m_dockElectrode) return;
@@ -587,6 +589,7 @@ void MainWindow::applyElectrodeConfigFromUi()
     kStim_B_b = QString("B%1").arg(m_spinStim_B_b->value());
 
     saveElectrodeConfig();
+    syncExperimentRoutingConfig();
 
     appendLog(QString("ElectrodeConfig applied. "
                       "SenseA(a)=[%1] SenseA(b)=[%2] SenseB(a')=[%3] SenseB(b')=[%4]; "
@@ -726,7 +729,7 @@ void MainWindow::onEpochDurationChanged(double sec)
 {
     colletion_time = sec;
     if (m_experiment) m_experiment->setEpochDuration(colletion_time);
-    m_timeline->setEpochSec(colletion_time);
+    if (m_coordinator) m_coordinator->setEpochDurationSec(colletion_time);
     appendLog(QString("Epoch 时长设置为 %1 s").arg(colletion_time, 0, 'f', 2));
 }
 
@@ -746,133 +749,10 @@ void MainWindow::onABEpochReady(int phaseIndex,
                                 const QVector<uint32_t> &timeStamps,
                                 const QVector<QVector<int>> &channelData)
 {
-    const QString phaseName = (phaseIndex == 0) ? "PhaseA (A端 stream0)" : "PhaseB (B端 stream2)";
-    if (!m_abAlgo || !m_engine) return;
-    if (timeStamps.isEmpty() || channelData.isEmpty()) return;
-
-    // 1) 按 phase 选择通道列表，算两条平均信号：avg[0]=a区，avg[1]=b区
-    const QVector<int> &sel_a = (phaseIndex == 0) ? kSense_A_a : kSense_B_a;
-    const QVector<int> &sel_b = (phaseIndex == 0) ? kSense_A_b : kSense_B_b;
-
-    QVector<int> avg_a = meanSelectedChannels(channelData, sel_a);
-    QVector<int> avg_b = meanSelectedChannels(channelData, sel_b);
-
-    if (avg_a.isEmpty() || avg_b.isEmpty() || avg_a.size() != timeStamps.size() || avg_b.size() != timeStamps.size()) {
-        appendLog(phaseName + ": 平均信号生成失败（通道列表/数据长度不匹配）");
-        return;
-    }
-
-    QVector<QVector<int>> avgChannelData;
-    avgChannelData.reserve(2);
-    avgChannelData.push_back(avg_a); // chIndex=0 -> a区平均
-    avgChannelData.push_back(avg_b); // chIndex=1 -> b区平均
-
-    // 2) 把“2路平均信号”送进你现有算法（算法不用改，仍然做滤波+尖峰检测）
-    const QVector<ABAlgorithm::Result> allResults =
-        m_abAlgo->analyzeEpoch(phaseIndex, timeStamps, avgChannelData);
-
-    if (allResults.isEmpty()) {
-        appendLog(phaseName + ": 本 epoch 未检测到事件");
-        return;
-    }
-
-    // 3) phase->triggerSource 不变：你说“配置24/25，触发0/1”，那这里继续沿用
-    //    仍然：PhaseA 刺激老鼠B 用 triggerSource=1；PhaseB 刺激老鼠A 用 triggerSource=0
-    const int triggerSource = (phaseIndex == 0) ? 1 : 0;
-
-    // 4) 按 a/b 区域决定刺激电极名字（关键：一条平均信号对应一根刺激电极）
-    auto electrodeForAvgIndex = [&](int avgIndex) -> QString {
-        if (phaseIndex == 0) { // A -> 刺激 B
-            return (avgIndex == 0) ? kStim_B_a : kStim_B_b;
-        } else {               // B -> 刺激 A
-            return (avgIndex == 0) ? kStim_A_a : kStim_A_b;
-        }
-    };
-
-    const uint32_t epochStartTs = timeStamps.first();
-    const double fs = (m_sampleRate > 0.0 ? m_sampleRate : 30000.0);
-
-    // 5) 只保留需要刺激的候选
-    QVector<ABAlgorithm::Result> candidates;
-    candidates.reserve(allResults.size());
-    for (const auto &r : allResults) {
-        if (!r.needStim) continue;
-        if (r.suggestedAmplitude_uA <= 0) continue;
-        candidates.push_back(r);
-    }
-    if (candidates.isEmpty()) {
-        appendLog(phaseName + ": 无需刺激");
-        return;
-    }
-
-    // 强度最大 10 个
-    std::sort(candidates.begin(), candidates.end(),
-              [](const ABAlgorithm::Result &a, const ABAlgorithm::Result &b) {
-                  return a.spikeAmplitude_uV > b.spikeAmplitude_uV;
-              });
-    const int maxStimPerEpoch = 10;
-    if (candidates.size() > maxStimPerEpoch) candidates.resize(maxStimPerEpoch);
-
-    // 按时间排序
-    std::sort(candidates.begin(), candidates.end(),
-              [](const ABAlgorithm::Result &a, const ABAlgorithm::Result &b) {
-                  return a.triggerTime < b.triggerTime;
-              });
-
-    const int epochId = ++m_epochCounter;
-
-    QVector<StimTimelineOverlay::Item> items;
-    items.reserve(candidates.size());
-
-    for (int i = 0; i < candidates.size(); ++i) {
-        const auto &r = candidates[i];
-
-        const QString targetElectrode = electrodeForAvgIndex(r.channelIndex); // 0->a区电极, 1->b区电极
-
-        int pulses = (r.suggestedNumPulses > 0) ? r.suggestedNumPulses : 1;
-
-        double offsetSec = 0.0;
-        if (r.triggerTime >= epochStartTs) offsetSec = double(r.triggerTime - epochStartTs) / fs;
-        const double offsetMs = offsetSec * 1000.0;
-        int delayMs = int(offsetMs);
-        if (delayMs < 0) delayMs = 0;
-
-        StimTimelineOverlay::Item it;
-        it.itemIndex = i;
-        it.offsetMs = offsetMs;
-        it.amp_uA = r.suggestedAmplitude_uA;
-        it.pulses = pulses;
-        it.ch = r.channelIndex;          // 这里现在是 0/1，代表 a平均/b平均
-        it.spike_uV = r.spikeAmplitude_uV;
-        it.electrode = targetElectrode;  // 关键：每条事件写入对应的刺激电极
-        it.fired = false;
-        items.push_back(it);
-
-        if (m_stimLog) {
-            m_stimLog->logPlanned(epochId, phaseIndex, i, offsetMs,
-                                  targetElectrode, it.amp_uA, it.pulses, it.ch, it.spike_uV);
-        }
-
-        QTimer::singleShot(delayMs, this,
-                           [this, epochId, itemIdx=i,
-                            targetElectrode,
-                            triggerSource,
-                            amp=it.amp_uA, pulses=it.pulses]() {
-                               if (m_timeline) m_timeline->markFired(epochId, itemIdx);
-                               if (!m_engine) return;
-                               m_engine->applyAdaptiveStim(targetElectrode, amp, pulses, triggerSource);
-                           });
-    }
-
-    if (m_timeline) {
-        m_timeline->setEpochPlan(epochId, phaseIndex, colletion_time, items);
-        ensureTimelineVisible();
-    }
-
-    appendLog(QString("%1: epochId=%2 计划刺激=%3")
-                  .arg(phaseName).arg(epochId).arg(items.size()));
+    if (!m_coordinator) return;
+    m_coordinator->handleEpochReady(phaseIndex, timeStamps, channelData);
+    ensureTimelineVisible();
 }
-
 
 void MainWindow::handleError(const QString &msg)
 {
