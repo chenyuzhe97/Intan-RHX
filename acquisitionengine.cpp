@@ -4,7 +4,8 @@ AcquisitionEngine::AcquisitionEngine(QObject *parent)
     : QObject(parent)
 {
     // 方便调试，看一下 USB 定时读取
-    m_usbTimer.setInterval(30); // ~33ms ≈ 30 Hz
+    m_usbTimer.setTimerType(Qt::PreciseTimer);
+    m_usbTimer.setInterval(10); // tighter polling to reduce FIFO buildup
     connect(&m_usbTimer, &QTimer::timeout,
             this, &AcquisitionEngine::onUsbTimer);
 }
@@ -265,22 +266,28 @@ void AcquisitionEngine::stopAcquisition()
 
 void AcquisitionEngine::onUsbTimer()
 {
-    if (!m_deviceOpened) return;
+    if (!m_deviceOpened || !m_rhxController) return;
 
-    // 官方文档有一个 blocksFor30Hz(sampleRate) 的工具函数
-    int blocksToRead = RHXDataBlock::blocksFor30Hz(
-        SampleRate30000Hz);
+    const int enabledStreams = m_rhxController->getNumEnabledDataStreams();
+    const int wordsPerBlock = RHXDataBlock::dataBlockSizeInWords(m_rhxController->getType(), enabledStreams);
+    if (wordsPerBlock <= 0) return;
 
-    // 这里你原来写死 16，也可以换成 blocksToRead
-    bool usbDataRead =
-        m_rhxController->readDataBlocks(blocksToRead, m_dataQueue);
-
-    if (!usbDataRead && !m_rhxController->isRunning()) {
-        // 没有更多数据，可能被停止了
+    const unsigned int availableWords = m_rhxController->getNumWordsInFifo();
+    const int availableBlocks = int(availableWords / unsigned(wordsPerBlock));
+    if (availableBlocks <= 0) {
+        if (!m_rhxController->isRunning()) {
+            return;
+        }
         return;
     }
 
-    // 处理队列中所有 block
+    const int blocksToRead = qBound(1, availableBlocks, MaxNumBlocksToRead);
+    const bool usbDataRead = m_rhxController->readDataBlocks(blocksToRead, m_dataQueue);
+
+    if (!usbDataRead && !m_rhxController->isRunning()) {
+        return;
+    }
+
     processDataQueue();
 }
 
