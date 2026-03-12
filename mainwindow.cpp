@@ -46,6 +46,9 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setupUi();
 
+    setupManualStimDock();
+    loadManualStimConfig();
+
     setupElectrodeConfigDock();
     loadElectrodeConfig();
 
@@ -245,32 +248,19 @@ void MainWindow::setupUi()
     {
         QHBoxLayout *row = new QHBoxLayout();
 
-        m_btnOpen     = new QPushButton(tr("打开设备"), this);
+        m_btnOpen            = new QPushButton(tr("打开设备"), this);
         m_btnStart           = new QPushButton(tr("普通采集"), this);
         m_btnStartClosedLoop = new QPushButton(tr("闭环实验采集"), this);
-        m_btnStop     = new QPushButton(tr("停止采集"), this);
-        m_btnStimOnce = new QPushButton(tr("发一次刺激 (trigger=0)"), this);
-        m_btnRecStart = new QPushButton(tr("开始录制(bin)"), this);
-        m_btnRecStop  = new QPushButton(tr("停止录制"), this);
+        m_btnStop            = new QPushButton(tr("停止采集"), this);
+        m_btnRecStart        = new QPushButton(tr("开始录制(bin)"), this);
+        m_btnRecStop         = new QPushButton(tr("停止录制"), this);
 
         row->addWidget(m_btnOpen);
         row->addWidget(m_btnStart);
         row->addWidget(m_btnStartClosedLoop);
         row->addWidget(m_btnStop);
-        row->addWidget(m_btnStimOnce);
         row->addWidget(m_btnRecStart);
         row->addWidget(m_btnRecStop);
-
-        row->addSpacing(14);
-        row->addWidget(new QLabel(tr("Epoch:"), this));
-
-        m_spinEpochSec = new QDoubleSpinBox(this);
-        m_spinEpochSec->setRange(0.1, 3600.0);
-        m_spinEpochSec->setDecimals(2);
-        m_spinEpochSec->setSingleStep(0.5);
-        m_spinEpochSec->setSuffix(" s");
-        m_spinEpochSec->setValue(colletion_time);
-        row->addWidget(m_spinEpochSec);
 
         row->addStretch(1);
         m_layout->addLayout(row);
@@ -433,12 +423,8 @@ void MainWindow::setupUi()
     connect(m_btnStart,           &QPushButton::clicked, this, &MainWindow::onStart);
     connect(m_btnStartClosedLoop, &QPushButton::clicked, this, &MainWindow::onStartClosedLoop);
     connect(m_btnStop,     &QPushButton::clicked, this, &MainWindow::onStop);
-    connect(m_btnStimOnce, &QPushButton::clicked, this, &MainWindow::onStimOnce);
     connect(m_btnRecStart, &QPushButton::clicked, this, &MainWindow::onRecStart);
     connect(m_btnRecStop,  &QPushButton::clicked, this, &MainWindow::onRecStop);
-
-    connect(m_spinEpochSec, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, &MainWindow::onEpochDurationChanged);
 
     connect(m_spinGainA, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, &MainWindow::onGainAChanged);
@@ -554,17 +540,229 @@ bool MainWindow::parseChannels1Based(const QString &text, QVector<int> &outZeroB
     return true;
 }
 
+void MainWindow::setupManualStimDock()
+{
+    m_dockManualStim = new QDockWidget(tr("普通采集刺激"), this);
+    m_dockManualStim->setObjectName("dockManualStimConfig");
+    m_dockManualStim->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+
+    QWidget *panel = new QWidget(m_dockManualStim);
+    QVBoxLayout *root = new QVBoxLayout(panel);
+
+    QGroupBox *gbManual = new QGroupBox(tr("普通采集 / 手动刺激配置"), panel);
+    QVBoxLayout *manualLayout = new QVBoxLayout(gbManual);
+
+    QLabel *tip = new QLabel(tr("这一栏只服务于普通采集：先下发刺激参数，再手动触发。"), gbManual);
+    tip->setWordWrap(true);
+    manualLayout->addWidget(tip);
+
+    QFormLayout *form = new QFormLayout();
+
+    QWidget *electrodeEditor = new QWidget(gbManual);
+    QHBoxLayout *electrodeRow = new QHBoxLayout(electrodeEditor);
+    electrodeRow->setContentsMargins(0, 0, 0, 0);
+    m_cmbManualStimPrefix = new QComboBox(electrodeEditor);
+    m_cmbManualStimPrefix->addItems({"A", "B"});
+    m_spinManualStimElectrode = new QSpinBox(electrodeEditor);
+    m_spinManualStimElectrode->setRange(1, 64);
+    m_spinManualStimElectrode->setSingleStep(1);
+    electrodeRow->addWidget(m_cmbManualStimPrefix);
+    electrodeRow->addWidget(m_spinManualStimElectrode, 1);
+
+    m_spinManualTriggerSource = new QSpinBox(gbManual);
+    m_spinManualTriggerSource->setRange(0, 15);
+    m_spinManualTriggerSource->setSingleStep(1);
+
+    m_spinManualFirstAmp = new QSpinBox(gbManual);
+    m_spinManualFirstAmp->setRange(1, 5000);
+    m_spinManualFirstAmp->setSingleStep(5);
+    m_spinManualFirstAmp->setSuffix(" uA");
+
+    m_spinManualSecondAmp = new QSpinBox(gbManual);
+    m_spinManualSecondAmp->setRange(1, 5000);
+    m_spinManualSecondAmp->setSingleStep(5);
+    m_spinManualSecondAmp->setSuffix(" uA");
+
+    m_spinManualPulseCount = new QSpinBox(gbManual);
+    m_spinManualPulseCount->setRange(1, 256);
+    m_spinManualPulseCount->setSingleStep(1);
+
+    m_spinManualFirstPhaseUs = new QSpinBox(gbManual);
+    m_spinManualFirstPhaseUs->setRange(1, 20000);
+    m_spinManualFirstPhaseUs->setSingleStep(10);
+    m_spinManualFirstPhaseUs->setSuffix(" us");
+
+    m_spinManualSecondPhaseUs = new QSpinBox(gbManual);
+    m_spinManualSecondPhaseUs->setRange(1, 20000);
+    m_spinManualSecondPhaseUs->setSingleStep(10);
+    m_spinManualSecondPhaseUs->setSuffix(" us");
+
+    m_spinManualInterphaseUs = new QSpinBox(gbManual);
+    m_spinManualInterphaseUs->setRange(0, 20000);
+    m_spinManualInterphaseUs->setSingleStep(10);
+    m_spinManualInterphaseUs->setSuffix(" us");
+
+    form->addRow(tr("刺激电极"), electrodeEditor);
+    form->addRow(tr("触发源"), m_spinManualTriggerSource);
+    form->addRow(tr("一相幅度"), m_spinManualFirstAmp);
+    form->addRow(tr("二相幅度"), m_spinManualSecondAmp);
+    form->addRow(tr("脉冲数"), m_spinManualPulseCount);
+    form->addRow(tr("一相时宽"), m_spinManualFirstPhaseUs);
+    form->addRow(tr("二相时宽"), m_spinManualSecondPhaseUs);
+    form->addRow(tr("相间间隔"), m_spinManualInterphaseUs);
+    manualLayout->addLayout(form);
+
+    QWidget *buttonRow = new QWidget(gbManual);
+    QHBoxLayout *buttonLayout = new QHBoxLayout(buttonRow);
+    buttonLayout->setContentsMargins(0, 0, 0, 0);
+
+    m_btnApplyManualStim = new QPushButton(tr("应用刺激配置"), buttonRow);
+    m_btnStimOnce = new QPushButton(tr("立即触发一次"), buttonRow);
+    m_btnApplyManualStim->setToolTip(tr("把当前普通采集刺激参数下发到设备。"));
+    m_btnStimOnce->setToolTip(tr("使用当前触发源手动触发一次刺激。"));
+
+    buttonLayout->addWidget(m_btnApplyManualStim);
+    buttonLayout->addWidget(m_btnStimOnce);
+    manualLayout->addWidget(buttonRow);
+
+    root->addWidget(gbManual);
+    root->addStretch(1);
+
+    panel->setLayout(root);
+    m_dockManualStim->setWidget(panel);
+    addDockWidget(Qt::LeftDockWidgetArea, m_dockManualStim);
+
+    connect(m_btnApplyManualStim, &QPushButton::clicked,
+            this, &MainWindow::applyManualStimConfigFromUi);
+    connect(m_btnStimOnce, &QPushButton::clicked,
+            this, &MainWindow::onStimOnce);
+}
+
+void MainWindow::loadManualStimConfig()
+{
+    if (!m_dockManualStim) return;
+
+    QSettings s;
+
+    const QString prefix = s.value("manual_stim/prefix", QStringLiteral("A")).toString();
+    const int prefixIndex = qMax(0, m_cmbManualStimPrefix->findText(prefix));
+    m_cmbManualStimPrefix->setCurrentIndex(prefixIndex);
+
+    m_spinManualStimElectrode->setValue(s.value("manual_stim/electrode_num", 2).toInt());
+    m_spinManualTriggerSource->setValue(s.value("manual_stim/trigger_source", 0).toInt());
+    m_spinManualFirstAmp->setValue(s.value("manual_stim/first_amp_uA", 20).toInt());
+    m_spinManualSecondAmp->setValue(s.value("manual_stim/second_amp_uA", 20).toInt());
+    m_spinManualPulseCount->setValue(s.value("manual_stim/pulses", 1).toInt());
+    m_spinManualFirstPhaseUs->setValue(s.value("manual_stim/first_phase_us", 500).toInt());
+    m_spinManualSecondPhaseUs->setValue(s.value("manual_stim/second_phase_us", 500).toInt());
+    m_spinManualInterphaseUs->setValue(s.value("manual_stim/interphase_us", 500).toInt());
+}
+
+void MainWindow::saveManualStimConfig() const
+{
+    if (!m_dockManualStim) return;
+
+    QSettings s;
+    s.setValue("manual_stim/prefix", m_cmbManualStimPrefix->currentText());
+    s.setValue("manual_stim/electrode_num", m_spinManualStimElectrode->value());
+    s.setValue("manual_stim/trigger_source", m_spinManualTriggerSource->value());
+    s.setValue("manual_stim/first_amp_uA", m_spinManualFirstAmp->value());
+    s.setValue("manual_stim/second_amp_uA", m_spinManualSecondAmp->value());
+    s.setValue("manual_stim/pulses", m_spinManualPulseCount->value());
+    s.setValue("manual_stim/first_phase_us", m_spinManualFirstPhaseUs->value());
+    s.setValue("manual_stim/second_phase_us", m_spinManualSecondPhaseUs->value());
+    s.setValue("manual_stim/interphase_us", m_spinManualInterphaseUs->value());
+}
+
+QString MainWindow::manualStimElectrodeName() const
+{
+    if (!m_cmbManualStimPrefix || !m_spinManualStimElectrode) {
+        return QStringLiteral("A1");
+    }
+
+    return QStringLiteral("%1%2")
+        .arg(m_cmbManualStimPrefix->currentText())
+        .arg(m_spinManualStimElectrode->value());
+}
+
+bool MainWindow::configureManualStimHardware(QString *summary)
+{
+    const QString electrodeName = manualStimElectrodeName();
+    const int triggerSource = m_spinManualTriggerSource ? m_spinManualTriggerSource->value() : 0;
+    const int firstAmp = m_spinManualFirstAmp ? m_spinManualFirstAmp->value() : 20;
+    const int secondAmp = m_spinManualSecondAmp ? m_spinManualSecondAmp->value() : 20;
+    const int pulses = m_spinManualPulseCount ? m_spinManualPulseCount->value() : 1;
+    const int firstPhaseUs = m_spinManualFirstPhaseUs ? m_spinManualFirstPhaseUs->value() : 500;
+    const int secondPhaseUs = m_spinManualSecondPhaseUs ? m_spinManualSecondPhaseUs->value() : 500;
+    const int interphaseUs = m_spinManualInterphaseUs ? m_spinManualInterphaseUs->value() : 500;
+
+    const QString detail = QStringLiteral("电极=%1 trigger=%2 一相=%3 uA 二相=%4 uA 脉冲=%5 时宽=%6/%7 us 间隔=%8 us")
+                               .arg(electrodeName)
+                               .arg(triggerSource)
+                               .arg(firstAmp)
+                               .arg(secondAmp)
+                               .arg(pulses)
+                               .arg(firstPhaseUs)
+                               .arg(secondPhaseUs)
+                               .arg(interphaseUs);
+    if (summary) {
+        *summary = detail;
+    }
+
+    if (!m_engine || !m_engine->rhx() || !m_engine->stimController()) {
+        return false;
+    }
+
+    m_engine->configureStim(electrodeName,
+                            firstAmp,
+                            secondAmp,
+                            firstPhaseUs,
+                            secondPhaseUs,
+                            interphaseUs,
+                            pulses,
+                            triggerSource);
+    return true;
+}
+
+void MainWindow::applyManualStimConfigFromUi()
+{
+    saveManualStimConfig();
+
+    QString summary;
+    if (!configureManualStimHardware(&summary)) {
+        appendLog(QStringLiteral("普通采集刺激参数已保存：%1（打开设备后可应用）").arg(summary));
+        return;
+    }
+
+    appendLog(QStringLiteral("普通采集刺激参数已应用：%1").arg(summary));
+}
+
 void MainWindow::setupElectrodeConfigDock()
 {
-    // Dock on the right
-    m_dockElectrode = new QDockWidget(tr("Electrode Config"), this);
-    m_dockElectrode->setObjectName("dockElectrodeConfig");
+    m_dockElectrode = new QDockWidget(tr("闭环实验配置"), this);
+    m_dockElectrode->setObjectName("dockClosedLoopConfig");
+    m_dockElectrode->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
 
     QWidget *panel = new QWidget(m_dockElectrode);
     QVBoxLayout *root = new QVBoxLayout(panel);
 
-    // ---- Sense group
-    QGroupBox *gbSense = new QGroupBox(tr("Sense channels (UI is 1-based, internal is 0-based)"), panel);
+    QGroupBox *gbExperiment = new QGroupBox(tr("闭环实验运行参数"), panel);
+    QVBoxLayout *experimentLayout = new QVBoxLayout(gbExperiment);
+    QLabel *experimentTip = new QLabel(tr("这一栏只影响闭环实验采集：AB epoch 切换、感受通道和目标刺激电极。"), gbExperiment);
+    experimentTip->setWordWrap(true);
+    experimentLayout->addWidget(experimentTip);
+
+    QFormLayout *experimentForm = new QFormLayout();
+    m_spinEpochSec = new QDoubleSpinBox(gbExperiment);
+    m_spinEpochSec->setRange(0.1, 3600.0);
+    m_spinEpochSec->setDecimals(2);
+    m_spinEpochSec->setSingleStep(0.5);
+    m_spinEpochSec->setSuffix(" s");
+    m_spinEpochSec->setValue(colletion_time);
+    experimentForm->addRow(tr("AB Epoch 时长"), m_spinEpochSec);
+    experimentLayout->addLayout(experimentForm);
+
+    QGroupBox *gbSense = new QGroupBox(tr("闭环感受通道 (UI 用 1-based)"), panel);
     QFormLayout *senseLayout = new QFormLayout(gbSense);
 
     m_editSense_A_a = new QLineEdit(gbSense);
@@ -572,27 +770,26 @@ void MainWindow::setupElectrodeConfigDock()
     m_editSense_B_a = new QLineEdit(gbSense);
     m_editSense_B_b = new QLineEdit(gbSense);
 
-    m_editSense_A_a->setPlaceholderText("e.g. 1,5,7");
-    m_editSense_A_b->setPlaceholderText("e.g. 9,11,15");
-    m_editSense_B_a->setPlaceholderText("e.g. 1,5,7");
-    m_editSense_B_b->setPlaceholderText("e.g. 9,11,15");
+    m_editSense_A_a->setPlaceholderText("例如 1,5,7");
+    m_editSense_A_b->setPlaceholderText("例如 9,11,15");
+    m_editSense_B_a->setPlaceholderText("例如 1,5,7");
+    m_editSense_B_b->setPlaceholderText("例如 9,11,15");
 
-    senseLayout->addRow(tr("Mouse A: a (stream0)"), m_editSense_A_a);
-    senseLayout->addRow(tr("Mouse A: b (stream0)"), m_editSense_A_b);
-    senseLayout->addRow(tr("Mouse B: a' (stream2)"), m_editSense_B_a);
-    senseLayout->addRow(tr("Mouse B: b' (stream2)"), m_editSense_B_b);
+    senseLayout->addRow(tr("A 鼠 a 区 (stream0)"), m_editSense_A_a);
+    senseLayout->addRow(tr("A 鼠 b 区 (stream0)"), m_editSense_A_b);
+    senseLayout->addRow(tr("B 鼠 a' 区 (stream2)"), m_editSense_B_a);
+    senseLayout->addRow(tr("B 鼠 b' 区 (stream2)"), m_editSense_B_b);
 
-    // ---- Stim group
-    QGroupBox *gbStim = new QGroupBox(tr("Stim electrodes (prefix fixed A/B)"), panel);
+    QGroupBox *gbStim = new QGroupBox(tr("闭环目标刺激电极 (A/B 前缀固定)"), panel);
     QFormLayout *stimLayout = new QFormLayout(gbStim);
 
     auto makeStimEditor = [&](const QString &prefix, QSpinBox *&spinOut) -> QWidget* {
         QWidget *w = new QWidget(gbStim);
         QHBoxLayout *hl = new QHBoxLayout(w);
-        hl->setContentsMargins(0,0,0,0);
+        hl->setContentsMargins(0, 0, 0, 0);
         QLabel *lab = new QLabel(prefix, w);
         spinOut = new QSpinBox(w);
-        spinOut->setRange(1, 64); // TODO: 如果你的电极编号范围不是 1..64，自行改这里
+        spinOut->setRange(1, 64);
         spinOut->setSingleStep(1);
         hl->addWidget(lab);
         hl->addWidget(spinOut, 1);
@@ -600,14 +797,14 @@ void MainWindow::setupElectrodeConfigDock()
         return w;
     };
 
-    stimLayout->addRow(tr("Stim A a:"),  makeStimEditor("A", m_spinStim_A_a));
-    stimLayout->addRow(tr("Stim A b:"),  makeStimEditor("A", m_spinStim_A_b));
-    stimLayout->addRow(tr("Stim B a':"), makeStimEditor("B", m_spinStim_B_a));
-    stimLayout->addRow(tr("Stim B b':"), makeStimEditor("B", m_spinStim_B_b));
+    stimLayout->addRow(tr("闭环刺激 A a"),  makeStimEditor("A", m_spinStim_A_a));
+    stimLayout->addRow(tr("闭环刺激 A b"),  makeStimEditor("A", m_spinStim_A_b));
+    stimLayout->addRow(tr("闭环刺激 B a'"), makeStimEditor("B", m_spinStim_B_a));
+    stimLayout->addRow(tr("闭环刺激 B b'"), makeStimEditor("B", m_spinStim_B_b));
 
-    // ---- Apply button
-    m_btnApplyElectrode = new QPushButton(tr("Apply"), panel);
+    m_btnApplyElectrode = new QPushButton(tr("应用闭环配置"), panel);
 
+    root->addWidget(gbExperiment);
     root->addWidget(gbSense);
     root->addWidget(gbStim);
     root->addWidget(m_btnApplyElectrode);
@@ -620,8 +817,9 @@ void MainWindow::setupElectrodeConfigDock()
 
     connect(m_btnApplyElectrode, &QPushButton::clicked,
             this, &MainWindow::applyElectrodeConfigFromUi);
+    connect(m_spinEpochSec, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, &MainWindow::onEpochDurationChanged);
 
-    // 初始化 UI 为当前默认值
     m_editSense_A_a->setText(formatChannels1Based(kSense_A_a));
     m_editSense_A_b->setText(formatChannels1Based(kSense_A_b));
     m_editSense_B_a->setText(formatChannels1Based(kSense_B_a));
@@ -648,7 +846,15 @@ void MainWindow::loadElectrodeConfig()
 
     QSettings s;
 
-    // Sense texts are stored as 1-based string like "1,5,7"
+    const double savedEpochSec = s.value("closed_loop/epoch_sec", colletion_time).toDouble();
+    if (savedEpochSec > 0.0) {
+        colletion_time = savedEpochSec;
+    }
+    if (m_spinEpochSec) {
+        QSignalBlocker blocker(m_spinEpochSec);
+        m_spinEpochSec->setValue(colletion_time);
+    }
+
     const QString tA_a = s.value("electrode/sense_A_a", m_editSense_A_a->text()).toString();
     const QString tA_b = s.value("electrode/sense_A_b", m_editSense_A_b->text()).toString();
     const QString tB_a = s.value("electrode/sense_B_a", m_editSense_B_a->text()).toString();
@@ -659,13 +865,11 @@ void MainWindow::loadElectrodeConfig()
     m_editSense_B_a->setText(tB_a);
     m_editSense_B_b->setText(tB_b);
 
-    // Stim numbers
     m_spinStim_A_a->setValue(s.value("electrode/stim_A_a_num", m_spinStim_A_a->value()).toInt());
     m_spinStim_A_b->setValue(s.value("electrode/stim_A_b_num", m_spinStim_A_b->value()).toInt());
     m_spinStim_B_a->setValue(s.value("electrode/stim_B_a_num", m_spinStim_B_a->value()).toInt());
     m_spinStim_B_b->setValue(s.value("electrode/stim_B_b_num", m_spinStim_B_b->value()).toInt());
 
-    // Apply to members (silent, invalid string -> keep old defaults)
     QString err;
     QVector<int> tmp;
 
@@ -702,6 +906,7 @@ void MainWindow::saveElectrodeConfig() const
     if (!m_dockElectrode) return;
 
     QSettings s;
+    s.setValue("closed_loop/epoch_sec", m_spinEpochSec ? m_spinEpochSec->value() : colletion_time);
     s.setValue("electrode/sense_A_a", m_editSense_A_a->text().trimmed());
     s.setValue("electrode/sense_A_b", m_editSense_A_b->text().trimmed());
     s.setValue("electrode/sense_B_a", m_editSense_B_a->text().trimmed());
@@ -742,7 +947,6 @@ void MainWindow::applyElectrodeConfigFromUi()
     }
     kSense_B_b = tmp;
 
-    // Stim strings
     kStim_A_a = QString("A%1").arg(m_spinStim_A_a->value());
     kStim_A_b = QString("A%1").arg(m_spinStim_A_b->value());
     kStim_B_a = QString("B%1").arg(m_spinStim_B_a->value());
@@ -751,14 +955,16 @@ void MainWindow::applyElectrodeConfigFromUi()
     saveElectrodeConfig();
     syncExperimentRoutingConfig();
 
-    appendLog(QString("ElectrodeConfig applied. "
-                      "SenseA(a)=[%1] SenseA(b)=[%2] SenseB(a')=[%3] SenseB(b')=[%4]; "
-                      "StimA(a)=%5 StimA(b)=%6 StimB(a')=%7 StimB(b')=%8")
+    appendLog(QStringLiteral("闭环实验配置已应用：Epoch=%1 s | SenseA(a)=[%2] SenseA(b)=[%3] SenseB(a')=[%4] SenseB(b')=[%5] | StimA(a)=%6 StimA(b)=%7 StimB(a')=%8 StimB(b')=%9")
+                  .arg(colletion_time, 0, 'f', 2)
                   .arg(formatChannels1Based(kSense_A_a))
                   .arg(formatChannels1Based(kSense_A_b))
                   .arg(formatChannels1Based(kSense_B_a))
                   .arg(formatChannels1Based(kSense_B_b))
-                  .arg(kStim_A_a).arg(kStim_A_b).arg(kStim_B_a).arg(kStim_B_b));
+                  .arg(kStim_A_a)
+                  .arg(kStim_A_b)
+                  .arg(kStim_B_a)
+                  .arg(kStim_B_b));
 }
 void MainWindow::applyDspSettings()
 {
@@ -945,10 +1151,18 @@ void MainWindow::onRecStop()
 
 void MainWindow::onStimOnce()
 {
-    if (!m_engine) return;
-    int triggerSource = 0;
+    saveManualStimConfig();
+
+    QString summary;
+    if (!configureManualStimHardware(&summary)) {
+        appendLog(QStringLiteral("未触发普通采集刺激：%1（请先打开设备）").arg(summary));
+        return;
+    }
+
+    const int triggerSource = m_spinManualTriggerSource ? m_spinManualTriggerSource->value() : 0;
     m_engine->triggerStim(triggerSource, true);
-    appendLog("已触发一次刺激：trigger=0");
+    m_engine->triggerStim(triggerSource, false);
+    appendLog(QStringLiteral("已手动触发一次普通采集刺激：%1").arg(summary));
 }
 
 void MainWindow::onEpochDurationChanged(double sec)

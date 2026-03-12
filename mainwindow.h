@@ -41,6 +41,7 @@ private slots:
     void onRecStart();
     void onRecStop();
     void onStimOnce();
+    void applyManualStimConfigFromUi();
 
     void onEpochDurationChanged(double sec);
     void onGainAChanged(double halfRangeUv);
@@ -51,7 +52,7 @@ private slots:
     void applyDspSettings();
     void onToggleFftWindows();
 
-    // Electrode config dock
+    // Closed-loop config dock
     void applyElectrodeConfigFromUi();
 
     void onABEpochReady(int phaseIndex,
@@ -68,7 +69,14 @@ private:
     void ensureFftVisible();
     void syncExperimentRoutingConfig();
 
-    // ===== Electrode config (GUI) =====
+    // ===== Manual stim (GUI) =====
+    void setupManualStimDock();
+    void loadManualStimConfig();
+    void saveManualStimConfig() const;
+    QString manualStimElectrodeName() const;
+    bool configureManualStimHardware(QString *summary = nullptr);
+
+    // ===== Closed-loop config (GUI) =====
     void setupElectrodeConfigDock();
     void loadElectrodeConfig();
     void saveElectrodeConfig() const;
@@ -81,13 +89,14 @@ private:
     QVBoxLayout    *m_layout  = nullptr;
 
     // ===== buttons =====
-        QPushButton    *m_btnOpen            = nullptr;
+    QPushButton    *m_btnOpen            = nullptr;
     QPushButton    *m_btnStart           = nullptr;
     QPushButton    *m_btnStartClosedLoop = nullptr;
     QPushButton    *m_btnStop            = nullptr;
-    QPushButton    *m_btnStimOnce = nullptr;
-    QPushButton    *m_btnRecStart = nullptr;
-    QPushButton    *m_btnRecStop  = nullptr;
+    QPushButton    *m_btnStimOnce        = nullptr;
+    QPushButton    *m_btnRecStart        = nullptr;
+    QPushButton    *m_btnRecStop         = nullptr;
+    QPushButton    *m_btnApplyManualStim = nullptr;
 
     QDoubleSpinBox *m_spinEpochSec = nullptr;
 
@@ -141,6 +150,18 @@ private:
     // 拼写保留
     double colletion_time = 60.0;
 
+    // ====== 普通采集刺激配置 ======
+    QDockWidget *m_dockManualStim = nullptr;
+    QComboBox   *m_cmbManualStimPrefix = nullptr;
+    QSpinBox    *m_spinManualStimElectrode = nullptr;
+    QSpinBox    *m_spinManualTriggerSource = nullptr;
+    QSpinBox    *m_spinManualFirstAmp = nullptr;
+    QSpinBox    *m_spinManualSecondAmp = nullptr;
+    QSpinBox    *m_spinManualPulseCount = nullptr;
+    QSpinBox    *m_spinManualFirstPhaseUs = nullptr;
+    QSpinBox    *m_spinManualSecondPhaseUs = nullptr;
+    QSpinBox    *m_spinManualInterphaseUs = nullptr;
+
     // ====== 你要自定义的：每个 phase 用哪些通道做区域平均 ======
     // 注意：内部存的是 0-based index（用于 channelData[ch]）。GUI 显示/输入用 1-based。
     // phaseIndex==0: 来自老鼠A的感受电极( stream0 )，算 a/b 两条平均信号
@@ -158,7 +179,7 @@ private:
     QString kStim_B_a = "B2";  // 刺激老鼠B a'区 的刺激电极
     QString kStim_B_b = "B7";  // 刺激老鼠B b'区 的刺激电极
 
-    // ====== Electrode Config Dock (GUI widgets) ======
+    // ====== Closed-loop Config Dock (GUI widgets) ======
     QDockWidget *m_dockElectrode = nullptr;
 
     QLineEdit *m_editSense_A_a = nullptr;
@@ -172,5 +193,4 @@ private:
     QSpinBox  *m_spinStim_B_b = nullptr;
 
     QPushButton *m_btnApplyElectrode = nullptr;
-
 };
