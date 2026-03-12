@@ -8,6 +8,7 @@
 #include <QWheelEvent>
 #include <QtMath>
 
+#include <algorithm>
 #include <cmath>
 
 StackedWaveWidget::StackedWaveWidget(QWidget *parent) : QWidget(parent)
@@ -85,32 +86,20 @@ void StackedWaveWidget::pushBlock(const QVector<uint32_t> &timeStamps,
 
 int StackedWaveWidget::overviewColumnCount(const QRect &contentRect) const
 {
-    const int maxColumnsByWidth = qBound(1, contentRect.width() / 160, qMin(m_channels, 6));
-    int columns = qBound(1,
-                         int(qRound(std::sqrt(double(m_channels) * double(contentRect.width()) / double(qMax(1, contentRect.height()))))),
-                         maxColumnsByWidth);
+    if (m_channels <= 8) return 1;
 
-    auto cellHeightFor = [&](int cols) -> int {
-        const int rows = qMax(1, (m_channels + cols - 1) / cols);
-        const int gap = 10;
-        return (contentRect.height() - gap * (rows - 1)) / rows;
-    };
-
-    while (columns < maxColumnsByWidth && cellHeightFor(columns) < 88) {
-        ++columns;
+    const int singleColumnHeight = (contentRect.height() - 6 * (m_channels - 1)) / qMax(1, m_channels);
+    if (m_channels > 10 && contentRect.width() >= 680 && singleColumnHeight < 34) {
+        return 2;
     }
-    while (columns > 1 && (contentRect.width() - 10 * (columns - 1)) / columns < 150) {
-        --columns;
-    }
-
-    return qBound(1, columns, qMax(1, maxColumnsByWidth));
+    return 1;
 }
 
 QRect StackedWaveWidget::overviewCardRect(const QRect &contentRect, int ch) const
 {
     const int columns = overviewColumnCount(contentRect);
     const int rows = qMax(1, (m_channels + columns - 1) / columns);
-    const int gap = 10;
+    const int gap = 8;
     const int cellW = (contentRect.width() - gap * (columns - 1)) / columns;
     const int cellH = (contentRect.height() - gap * (rows - 1)) / rows;
 
@@ -199,7 +188,7 @@ void StackedWaveWidget::drawHeader(QPainter &p, const QRect &rect) const
 
     p.setFont(QFont(titleFont.family(), titleFont.pointSize() - 1, QFont::Medium));
     const QString modeText = (m_mode == ViewMode::Overview)
-        ? QStringLiteral("Overview cards (auto-scale)")
+        ? QStringLiteral("Stacked lanes (per-channel auto-scale)")
         : QStringLiteral("Focus CH%1").arg(m_focusCh + 1, 2, 10, QChar('0'));
 
     QString filterText = QStringLiteral("RAW");
@@ -281,85 +270,118 @@ void StackedWaveWidget::drawTimeRuler(QPainter &p, const QRect &plotRect) const
 
 void StackedWaveWidget::drawOverview(QPainter &p, const QRect &contentRect, const ViewRange &range) const
 {
-    const QColor cardFill(16, 26, 36);
-    const QColor headerFill(21, 34, 46);
-    const QColor border(34, 54, 66);
-    const QColor borderHover(52, 177, 160);
-    const QColor borderSelected(240, 191, 76);
-    const QColor wave(50, 214, 189);
-    const QColor waveSelected(255, 207, 92);
-    const QColor waveHover(110, 226, 214);
+    const QColor laneFillEven(14, 23, 31);
+    const QColor laneFillOdd(10, 18, 25);
+    const QColor laneBorder(35, 55, 68);
+    const QColor laneHover(64, 194, 176);
+    const QColor laneSelected(244, 196, 82);
+    const QColor tagFill(22, 35, 46);
+    const QColor wave(106, 246, 232);
+    const QColor waveHover(166, 248, 239);
+    const QColor waveSelected(255, 221, 128);
 
     for (int ch = 0; ch < m_channels; ++ch) {
         const QRect outer = overviewCardRect(contentRect, ch);
-        if (outer.width() < 120 || outer.height() < 82) continue;
+        if (outer.width() < 220 || outer.height() < 24) continue;
 
-        const QRect headerRect = QRect(outer.left() + 10, outer.top() + 8, outer.width() - 20, 20);
-        const QRect plotRect = outer.adjusted(10, 30, -10, -24);
-        if (plotRect.width() < 24 || plotRect.height() < 24) continue;
+        const bool compact = outer.height() < 48;
+        const int pad = compact ? 5 : 7;
+        const int tagW = compact ? 76 : 108;
+        const QRect tagRect(outer.left() + pad, outer.top() + pad, tagW, outer.height() - pad * 2);
+        const int plotX = tagRect.right() + 8;
+        const QRect plotRect(plotX,
+                             outer.top() + pad,
+                             outer.right() - pad - plotX + 1,
+                             outer.height() - pad * 2);
+        if (plotRect.width() < 36 || plotRect.height() < 14) continue;
 
         const bool isSelected = (ch == m_selectedCh);
         const bool isHover = (ch == m_hoverCh);
-        const QColor edge = isSelected ? borderSelected : (isHover ? borderHover : border);
+        const QColor edge = isSelected ? laneSelected : (isHover ? laneHover : laneBorder);
 
         p.save();
         p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(QPen(edge, isSelected ? 2.0 : 1.1));
-        p.setBrush(cardFill);
-        p.drawRoundedRect(outer, 12, 12);
+        p.setPen(QPen(edge, isSelected ? 1.7 : 1.0));
+        p.setBrush((ch % 2 == 0) ? laneFillEven : laneFillOdd);
+        p.drawRoundedRect(outer, 10, 10);
 
         p.setPen(Qt::NoPen);
-        p.setBrush(headerFill);
-        p.drawRoundedRect(QRect(outer.left(), outer.top(), outer.width(), 28), 12, 12);
-        p.drawRect(QRect(outer.left(), outer.top() + 14, outer.width(), 14));
+        p.setBrush(tagFill);
+        p.drawRoundedRect(tagRect, 8, 8);
 
-        p.setPen(QColor(236, 242, 246));
-        QFont chFont = p.font();
-        chFont.setBold(true);
-        p.setFont(chFont);
-        p.drawText(headerRect.adjusted(0, 0, -96, 0), Qt::AlignLeft | Qt::AlignVCenter,
+        QFont labelFont = p.font();
+        labelFont.setBold(true);
+        labelFont.setPointSize(qMax(8, labelFont.pointSize() - (compact ? 1 : 0)));
+        p.setFont(labelFont);
+        p.setPen(QColor(242, 247, 250));
+        p.drawText(tagRect.adjusted(8, compact ? 2 : 4, -6, 0), Qt::AlignLeft | Qt::AlignTop,
                    QStringLiteral("CH %1").arg(ch + 1, 2, 10, QChar('0')));
 
         const ChannelStats stats = computeStatsLocked(m_rings[ch], range);
-        const double peakAbs = stats.valid ? qMax(std::abs(stats.minUv), std::abs(stats.maxUv)) : m_gainUv;
-        const double overviewGainUv = qBound(35.0, peakAbs * 1.45, m_gainMax);
+        double overviewGainUv = 120.0;
+        if (range.valid) {
+            QVector<float> absSamples;
+            const int step = qMax(1, (range.end - range.start + 1) / 180);
+            absSamples.reserve((range.end - range.start + step) / step);
+            for (int i = range.start; i <= range.end; i += step) {
+                absSamples.push_back(std::abs(m_rings[ch].atFromOldest(i)));
+            }
 
-        p.setFont(QFont(chFont.family(), qMax(8, chFont.pointSize() - 2)));
-        p.setPen(QColor(156, 186, 199));
-        const QString statsText = stats.valid
-            ? QStringLiteral("P2P %1  RMS %2")
-                  .arg(stats.p2pUv, 0, 'f', 0)
-                  .arg(stats.rmsUv, 0, 'f', 0)
+            if (!absSamples.isEmpty()) {
+                auto p80It = absSamples.begin() + int(0.80 * double(absSamples.size() - 1));
+                std::nth_element(absSamples.begin(), p80It, absSamples.end());
+                const double p80Abs = *p80It;
+                const double rmsDriven = stats.valid ? stats.rmsUv * 4.2 : p80Abs * 1.6;
+                const double robustDriven = qMax(rmsDriven, p80Abs * 1.8);
+                overviewGainUv = qBound(18.0, robustDriven, 220.0);
+            }
+        }
+
+        p.setFont(QFont(labelFont.family(), compact ? 7 : 8));
+        p.setPen(QColor(150, 181, 194));
+        const QString statText = stats.valid
+            ? (compact
+                ? QStringLiteral("R%1 P%2").arg(stats.rmsUv, 0, 'f', 0).arg(stats.p2pUv, 0, 'f', 0)
+                : QStringLiteral("RMS %1\nP2P %2").arg(stats.rmsUv, 0, 'f', 0).arg(stats.p2pUv, 0, 'f', 0))
             : QStringLiteral("Waiting");
-        p.drawText(headerRect.adjusted(92, 0, 0, 0), Qt::AlignRight | Qt::AlignVCenter, statsText);
+        p.drawText(tagRect.adjusted(8, compact ? 16 : 24, -6, -4), compact ? (Qt::AlignLeft | Qt::AlignVCenter) : (Qt::AlignLeft | Qt::AlignTop), statText);
 
-        p.setPen(QColor(42, 61, 74));
-        p.setBrush(QColor(11, 18, 24));
-        p.drawRoundedRect(plotRect, 9, 9);
+        p.setPen(QPen(QColor(42, 61, 74), 1));
+        p.setBrush(QColor(7, 12, 17));
+        p.drawRoundedRect(plotRect, 8, 8);
 
         p.setClipRect(plotRect.adjusted(1, 1, -1, -1));
-        p.setPen(QColor(36, 51, 62));
-        for (int g = 1; g <= 2; ++g) {
-            const int y = plotRect.top() + plotRect.height() * g / 3;
-            p.drawLine(plotRect.left() + 5, y, plotRect.right() - 5, y);
-        }
+        p.setPen(QColor(27, 40, 49));
         for (int g = 1; g <= 3; ++g) {
             const int x = plotRect.left() + plotRect.width() * g / 4;
-            p.drawLine(x, plotRect.top() + 5, x, plotRect.bottom() - 5);
+            p.drawLine(x, plotRect.top() + 3, x, plotRect.bottom() - 3);
         }
-        p.setPen(QColor(64, 92, 104));
-        p.drawLine(plotRect.left() + 5, plotRect.center().y(), plotRect.right() - 5, plotRect.center().y());
+        if (!compact) {
+            p.setPen(QColor(24, 36, 45));
+            p.drawLine(plotRect.left() + 4, plotRect.top() + plotRect.height() / 4,
+                       plotRect.right() - 4, plotRect.top() + plotRect.height() / 4);
+            p.drawLine(plotRect.left() + 4, plotRect.bottom() - plotRect.height() / 4,
+                       plotRect.right() - 4, plotRect.bottom() - plotRect.height() / 4);
+        }
+        p.setPen(QColor(74, 108, 122));
+        p.drawLine(plotRect.left() + 4, plotRect.center().y(), plotRect.right() - 4, plotRect.center().y());
 
+        const QRect waveRect = plotRect.adjusted(4, 4, -4, -4);
         const QColor curve = isSelected ? waveSelected : (isHover ? waveHover : wave);
-        drawWaveform(p, plotRect.adjusted(5, 5, -5, -5), m_rings[ch], range, curve, overviewGainUv, plotRect.center().y());
+        if (range.valid) {
+            drawWaveform(p, waveRect, m_rings[ch], range, curve, overviewGainUv, waveRect.center().y());
+        } else {
+            p.setPen(QColor(124, 152, 165));
+            p.drawText(plotRect, Qt::AlignCenter, QStringLiteral("Waiting for samples"));
+        }
         p.setClipping(false);
 
-        p.setPen(QColor(110, 138, 151));
-        p.setFont(QFont(chFont.family(), qMax(8, chFont.pointSize() - 3)));
-        p.drawText(plotRect.adjusted(6, 0, -6, -4), Qt::AlignBottom | Qt::AlignLeft,
-                   QStringLiteral("auto ±%1").arg(overviewGainUv, 0, 'f', 0));
-        p.drawText(plotRect.adjusted(6, 0, -6, -4), Qt::AlignBottom | Qt::AlignRight,
-                   QStringLiteral("%1 s").arg(m_windowSec, 0, 'f', 2));
+        p.setPen(QColor(128, 157, 170));
+        p.setFont(QFont(labelFont.family(), compact ? 7 : 8));
+        const QString footer = compact
+            ? QStringLiteral("+/-%1").arg(overviewGainUv, 0, 'f', 0)
+            : QStringLiteral("auto +/-%1 uV   %2 s").arg(overviewGainUv, 0, 'f', 0).arg(m_windowSec, 0, 'f', 2);
+        p.drawText(plotRect.adjusted(6, 0, -6, -3), Qt::AlignBottom | Qt::AlignRight, footer);
         p.restore();
     }
 }

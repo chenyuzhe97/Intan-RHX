@@ -347,8 +347,8 @@ void MainWindow::setupUi()
     m_viewA->configure(m_channelsPerStream, m_sampleRate, m_visibleWindowSec, m_maxWindowSec);
     m_viewB->configure(m_channelsPerStream, m_sampleRate, m_visibleWindowSec, m_maxWindowSec);
 
-    m_viewA->setTitle("Stream A monitor  |  click select / dblclick focus / right-click tools");
-    m_viewB->setTitle("Stream B monitor  |  click select / dblclick focus / right-click tools");
+    m_viewA->setTitle("Stream A stacked view  |  click select / dblclick focus / wheel gain / Ctrl+wheel window");
+    m_viewB->setTitle("Stream B stacked view  |  click select / dblclick focus / wheel gain / Ctrl+wheel window");
 
     m_viewA->setGainUv(m_spinGainA->value());
     m_viewB->setGainUv(m_spinGainB->value());
@@ -361,13 +361,13 @@ void MainWindow::setupUi()
     m_split->setStretchFactor(0, 1);
     m_split->setStretchFactor(1, 1);
 
-    m_layout->addWidget(m_split, 3);
+    m_layout->addWidget(m_split, 5);
 
     // ===== 日志 =====
         m_logView  = new QPlainTextEdit(this);
     m_logView->setObjectName("logView");
     m_logView->setReadOnly(true);
-    m_logView->setMinimumHeight(170);
+    m_logView->setMinimumHeight(120);
     m_logView->document()->setMaximumBlockCount(3000);
     m_layout->addWidget(m_logView, 1);
 
