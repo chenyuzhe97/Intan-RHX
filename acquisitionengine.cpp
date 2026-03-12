@@ -129,8 +129,70 @@ void AcquisitionEngine::inspectTimestampBatch(const char *streamTag,
 
     emit logMessage(message);
 }
+void AcquisitionEngine::enqueueBlockForRecording(RHXDataBlock *block)
+{
+    if (!block) return;
+    {
+        std::lock_guard<std::mutex> lock(m_recordQueueMutex);
+        m_recordQueue.push_back(block);
+    }
+    m_recordQueueCv.notify_one();
+}
+
+void AcquisitionEngine::recordingWorkerLoop()
+{
+    while (true) {
+        RHXDataBlock *block = nullptr;
+        {
+            std::unique_lock<std::mutex> lock(m_recordQueueMutex);
+            m_recordQueueCv.wait(lock, [&] {
+                return m_recordWorkerStopRequested || !m_recordQueue.empty();
+            });
+
+            if (m_recordQueue.empty()) {
+                if (m_recordWorkerStopRequested) {
+                    break;
+                }
+                continue;
+            }
+
+            block = m_recordQueue.front();
+            m_recordQueue.pop_front();
+        }
+
+        writeBlockToRecording(block);
+        delete block;
+    }
+}
+
+void AcquisitionEngine::stopRecordingWorker()
+{
+    {
+        std::lock_guard<std::mutex> lock(m_recordQueueMutex);
+        m_recordWorkerStopRequested = true;
+    }
+    m_recordQueueCv.notify_all();
+
+    if (m_recordWorker.joinable()) {
+        m_recordWorker.join();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_recordQueueMutex);
+        while (!m_recordQueue.empty()) {
+            delete m_recordQueue.front();
+            m_recordQueue.pop_front();
+        }
+        m_recordWorkerStopRequested = false;
+    }
+}
 void AcquisitionEngine::cleanup()
 {
+    stopRecordingWorker();
+    if (m_recordStream.is_open()) {
+        m_recordStream.close();
+    }
+    m_recordNumStreams = 0;
     // 清空队列里的 RHXDataBlock
     while (!m_dataQueue.empty()) {
         delete m_dataQueue.front();
@@ -340,11 +402,13 @@ void AcquisitionEngine::processDataQueue()
 
         // 录制：建议这里用 writeBlockToRecording(block)（你现在 writeBlockStream() 逻辑其实不太对）
         if (m_isRecording) {
-            //writeBlockStream();
-            writeBlockToRecording(block);
+            enqueueBlockForRecording(block);
+            block = nullptr;
         }
 
-        delete block;
+        if (block) {
+            delete block;
+        }
     }
 
     const unsigned int fifoWords = m_rhxController ? m_rhxController->getNumWordsInFifo() : 0;
@@ -376,13 +440,14 @@ void AcquisitionEngine::resumeContinuousAfterStim()
 // ⭐ 关键：使用 RHXDataBlock::write() 写原生二进制格式
 void AcquisitionEngine::writeBlockToRecording(RHXDataBlock *block)
 {
-    if (!m_isRecording) return;
     if (!m_recordStream.is_open()) return;
     if (!block) return;
 
-    int numStreams = m_rhxController->getNumEnabledDataStreams();
+    int numStreams = m_recordNumStreams;
+    if (numStreams <= 0 && m_rhxController) {
+        numStreams = m_rhxController->getNumEnabledDataStreams();
+    }
 
-    // 这和示例里的 queueToFile 在底层是一致的：按 Intan 定义格式写一个 USB data block
     block->write(m_recordStream, numStreams);
 }
 
@@ -491,41 +556,44 @@ void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
 bool AcquisitionEngine::startBinaryRecording(const QString &filePath)
 {
     if (!m_deviceOpened) {
-        emit errorOccurred("请先打开设备再开始录制");
+        emit errorOccurred("未打开设备，无法开始录制");
         return false;
     }
 
-    // 如果之前已经在录，先关掉
     if (m_isRecording) {
         stopBinaryRecording();
     }
 
-    // ⭐ 按示例 main.cpp 的方式打开二进制文件
+    stopRecordingWorker();
+
     m_recordStream.open(filePath.toStdString(),
                         std::ios::binary | std::ios::out);
 
     if (!m_recordStream.is_open()) {
-        emit errorOccurred("无法打开录制文件：" + filePath);
+        emit errorOccurred(QStringLiteral("无法打开录制文件：") + filePath);
         return false;
     }
 
-    // 不写任何自定义文件头，直接写 Intan 原生数据块
+    m_recordNumStreams = m_rhxController->getNumEnabledDataStreams();
+    m_recordWorker = std::thread(&AcquisitionEngine::recordingWorkerLoop, this);
     m_isRecording = true;
-    emit logMessage("开始二进制录制：" + filePath);
+    emit logMessage(QStringLiteral("开始录制到文件：") + filePath);
     return true;
 }
 
 void AcquisitionEngine::stopBinaryRecording()
 {
-    if (!m_isRecording)
+    if (!m_isRecording && !m_recordWorker.joinable())
         return;
 
     m_isRecording = false;
+    stopRecordingWorker();
+    m_recordNumStreams = 0;
 
     if (m_recordStream.is_open()) {
         m_recordStream.close();
     }
 
-    emit logMessage("二进制录制已停止");
+    emit logMessage("录制已停止");
 }
 

@@ -5,7 +5,10 @@
 #include <QObject>
 #include <QTimer>
 #include <QVector>
+#include <condition_variable>
 #include <deque>
+#include <mutex>
+#include <thread>
 #include <QDebug>
 #include <QThread>
 
@@ -112,14 +115,23 @@ private:
     // ⭐ 新的录制函数：直接将一个 RHXDataBlock 按 Intan 官方格式写入文件
     void writeBlockToRecording(RHXDataBlock *block);
     void writeBlockStream();
+    void enqueueBlockForRecording(RHXDataBlock *block);
+    void recordingWorkerLoop();
+    void stopRecordingWorker();
 
 private:
     RHXController   *m_rhxController   = nullptr;
     Controller      *m_stimController  = nullptr;
 
     // ⭐ 使用 std::ofstream 直接写 Intan 原生二进制数据
-    std::ofstream   m_recordStream;
-    bool            m_isRecording = false;
+    std::ofstream            m_recordStream;
+    bool                     m_isRecording = false;
+    std::thread              m_recordWorker;
+    std::mutex               m_recordQueueMutex;
+    std::condition_variable  m_recordQueueCv;
+    std::deque<RHXDataBlock*> m_recordQueue;
+    bool                     m_recordWorkerStopRequested = false;
+    int                      m_recordNumStreams = 0;
 
     QTimer                     m_usbTimer;
     std::deque<RHXDataBlock*>  m_dataQueue;
