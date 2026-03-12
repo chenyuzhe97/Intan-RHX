@@ -85,7 +85,7 @@ MainWindow::MainWindow(QWidget *parent)
     // ===== timeline + stim csv =====
     m_timeline = new StimTimelineOverlay();
     m_timeline->setEpochSec(colletion_time);
-    m_timeline->show();
+    m_timeline->hide();
 
     m_stimLog = new StimLogWriter(this);
     m_stimLog->start(QDir::currentPath() + "/stim_log.csv");
@@ -108,7 +108,6 @@ MainWindow::MainWindow(QWidget *parent)
     m_fftA->hide();
     m_fftB->hide();
 
-    ensureTimelineVisible();
     applyDspSettings();
 }
 
@@ -247,7 +246,8 @@ void MainWindow::setupUi()
         QHBoxLayout *row = new QHBoxLayout();
 
         m_btnOpen     = new QPushButton(tr("打开设备"), this);
-        m_btnStart    = new QPushButton(tr("开始采集"), this);
+        m_btnStart           = new QPushButton(tr("普通采集"), this);
+        m_btnStartClosedLoop = new QPushButton(tr("闭环实验采集"), this);
         m_btnStop     = new QPushButton(tr("停止采集"), this);
         m_btnStimOnce = new QPushButton(tr("发一次刺激 (trigger=0)"), this);
         m_btnRecStart = new QPushButton(tr("开始录制(bin)"), this);
@@ -255,6 +255,7 @@ void MainWindow::setupUi()
 
         row->addWidget(m_btnOpen);
         row->addWidget(m_btnStart);
+        row->addWidget(m_btnStartClosedLoop);
         row->addWidget(m_btnStop);
         row->addWidget(m_btnStimOnce);
         row->addWidget(m_btnRecStart);
@@ -429,7 +430,8 @@ void MainWindow::setupUi()
 
     // ===== connections =====
     connect(m_btnOpen,     &QPushButton::clicked, this, &MainWindow::onOpenDevice);
-    connect(m_btnStart,    &QPushButton::clicked, this, &MainWindow::onStart);
+    connect(m_btnStart,           &QPushButton::clicked, this, &MainWindow::onStart);
+    connect(m_btnStartClosedLoop, &QPushButton::clicked, this, &MainWindow::onStartClosedLoop);
     connect(m_btnStop,     &QPushButton::clicked, this, &MainWindow::onStop);
     connect(m_btnStimOnce, &QPushButton::clicked, this, &MainWindow::onStimOnce);
     connect(m_btnRecStart, &QPushButton::clicked, this, &MainWindow::onRecStart);
@@ -821,22 +823,88 @@ void MainWindow::onStart()
 {
     if (!m_engine) return;
 
-    m_engine->startContinuousAcquisition();
+    const bool wasAcquiring = m_engine->isContinuousRunning();
+    if (!wasAcquiring) {
+        m_engine->startContinuousAcquisition();
+    }
+    if (!m_engine->isContinuousRunning()) return;
+
+    const bool wasClosedLoop = m_closedLoopExperimentActive;
+    if (m_experiment) m_experiment->stop();
+    m_closedLoopExperimentActive = false;
+
+    if (m_timeline) m_timeline->hide();
+
+    if (!wasAcquiring) {
+        appendLog("已开始普通采集");
+    } else if (wasClosedLoop) {
+        appendLog("已切换到普通采集：闭环实验已停止");
+    } else {
+        appendLog("普通采集已在运行");
+    }
+}
+
+void MainWindow::onStartClosedLoop()
+{
+    if (!m_engine) return;
+
+    const bool wasAcquiring = m_engine->isContinuousRunning();
+    if (!wasAcquiring) {
+        m_engine->startContinuousAcquisition();
+    }
+    if (!m_engine->isContinuousRunning()) return;
+
+    if (m_closedLoopExperimentActive) {
+        if (m_timeline) {
+            m_timeline->setEpochSec(colletion_time);
+            m_timeline->show();
+            ensureTimelineVisible();
+        }
+        appendLog("闭环实验采集已在运行");
+        return;
+    }
 
     if (m_experiment) {
         m_experiment->setEpochDuration(colletion_time);
         m_experiment->start();
     }
+    m_closedLoopExperimentActive = true;
 
-    ensureTimelineVisible();
-    appendLog(QString("开始采集 + AB epoch=%1 s").arg(colletion_time, 0, 'f', 2));
+    if (m_timeline) {
+        m_timeline->setEpochSec(colletion_time);
+        m_timeline->show();
+        ensureTimelineVisible();
+    }
+
+    if (!wasAcquiring) {
+        appendLog(QString("已开始闭环实验采集：AB epoch=%1 s").arg(colletion_time, 0, 'f', 2));
+    } else {
+        appendLog(QString("已在当前采集上启动闭环实验：AB epoch=%1 s").arg(colletion_time, 0, 'f', 2));
+    }
 }
 
 void MainWindow::onStop()
 {
+    const bool wasClosedLoop = m_closedLoopExperimentActive;
+    const bool wasAcquiring = m_engine && m_engine->isContinuousRunning();
+
     if (m_experiment) m_experiment->stop();
-    if (m_engine)     m_engine->stopAcquisition();
-    appendLog("已停止采集");
+    m_closedLoopExperimentActive = false;
+
+    if (m_engine && wasAcquiring) {
+        m_engine->stopAcquisition();
+    }
+    if (m_timeline) m_timeline->hide();
+
+    if (wasClosedLoop && wasAcquiring) {
+        appendLog("已停止闭环实验采集");
+    } else if (wasAcquiring) {
+        appendLog("已停止普通采集");
+    } else if (wasClosedLoop) {
+        appendLog("闭环实验已停止");
+    } else {
+        appendLog("当前没有正在运行的采集");
+    }
 }
 
 void MainWindow::onRecStart()

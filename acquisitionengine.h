@@ -41,6 +41,7 @@ public:
     // 开始/停止连续采集（SPI 连续跑，USB 定时读取）
     void startContinuousAcquisition();
     void stopAcquisition();
+    bool isContinuousRunning() const { return m_continuousRunning; }
 
     // 简单的刺激配置接口：把电极参数交给底层 Controller
     void configureStim(const QString &electrodeName,

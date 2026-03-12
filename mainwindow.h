@@ -36,6 +36,7 @@ public:
 private slots:
     void onOpenDevice();
     void onStart();
+    void onStartClosedLoop();
     void onStop();
     void onRecStart();
     void onRecStop();
@@ -80,9 +81,10 @@ private:
     QVBoxLayout    *m_layout  = nullptr;
 
     // ===== buttons =====
-    QPushButton    *m_btnOpen     = nullptr;
-    QPushButton    *m_btnStart    = nullptr;
-    QPushButton    *m_btnStop     = nullptr;
+        QPushButton    *m_btnOpen            = nullptr;
+    QPushButton    *m_btnStart           = nullptr;
+    QPushButton    *m_btnStartClosedLoop = nullptr;
+    QPushButton    *m_btnStop            = nullptr;
     QPushButton    *m_btnStimOnce = nullptr;
     QPushButton    *m_btnRecStart = nullptr;
     QPushButton    *m_btnRecStop  = nullptr;
@@ -133,6 +135,8 @@ private:
     int    m_channelsPerStream = 16;
     double m_visibleWindowSec = 2.0;   // 初始显示 2s（Ctrl+滚轮可变）
     double m_maxWindowSec = 20.0;      // ring buffer 预留 20s
+
+    bool   m_closedLoopExperimentActive = false;
 
     // 拼写保留
     double colletion_time = 60.0;
