@@ -244,11 +244,17 @@ void StackedWaveWidget::drawHeader(QPainter &p, const QRect &rect) const
         filterText += QStringLiteral(" + Notch %1").arg(m_filt.notch_hz, 0, 'f', 0);
     }
 
-    const QString meta = QStringLiteral("%1   |   CH%2   |   %3 s   |   ±%4 µV   |   lane %5 px   |   %6")
+    const QString rangeText = (m_mode == ViewMode::Overview)
+        ? ((std::abs(m_overviewGainScale - 1.0) < 0.001)
+            ? QStringLiteral("overview auto")
+            : QStringLiteral("overview x%1").arg(m_overviewGainScale, 0, 'f', 2))
+        : QStringLiteral("±%1 µV").arg(m_gainUv, 0, 'f', 0);
+
+    const QString meta = QStringLiteral("%1   |   CH%2   |   %3 s   |   %4   |   lane %5 px   |   %6")
                              .arg(modeText)
                              .arg(m_selectedCh + 1, 2, 10, QChar('0'))
                              .arg(m_windowSec, 0, 'f', 2)
-                             .arg(m_gainUv, 0, 'f', 0)
+                             .arg(rangeText)
                              .arg(m_overviewLaneHeight)
                              .arg(filterText);
 
@@ -359,8 +365,7 @@ void StackedWaveWidget::drawOverview(QPainter &p, const QRect &contentRect, cons
                    QStringLiteral("CH %1").arg(ch + 1, 2, 10, QChar('0')));
 
         const ChannelStats stats = computeStatsLocked(m_rings[ch], range);
-        const double overviewScale = qBound(0.25, m_gainUv / 500.0, 12.0);
-        double overviewGainUv = qBound(18.0, 120.0 * overviewScale, 5000.0);
+        double autoOverviewGainUv = 120.0;
         if (range.valid) {
             QVector<float> absSamples;
             const int step = qMax(1, (range.end - range.start + 1) / 180);
@@ -375,9 +380,13 @@ void StackedWaveWidget::drawOverview(QPainter &p, const QRect &contentRect, cons
                 const double p80Abs = *p80It;
                 const double rmsDriven = stats.valid ? stats.rmsUv * 4.2 : p80Abs * 1.6;
                 const double robustDriven = qMax(rmsDriven, p80Abs * 1.8);
-                overviewGainUv = qBound(18.0, robustDriven * overviewScale, 5000.0);
+                autoOverviewGainUv = qBound(18.0, robustDriven, 5000.0);
             }
         }
+        const double overviewGainUv = qBound(18.0,
+                                             autoOverviewGainUv * m_overviewGainScale,
+                                             5000.0);
+        const bool manualOverviewGain = (std::abs(m_overviewGainScale - 1.0) >= 0.001);
 
         p.setFont(QFont(labelFont.family(), compact ? 7 : 8));
         p.setPen(QColor(150, 181, 194));
@@ -423,8 +432,13 @@ void StackedWaveWidget::drawOverview(QPainter &p, const QRect &contentRect, cons
         p.setPen(QColor(128, 157, 170));
         p.setFont(QFont(labelFont.family(), compact ? 7 : 8));
         const QString footer = compact
-            ? QStringLiteral("+/-%1").arg(overviewGainUv, 0, 'f', 0)
-            : QStringLiteral("auto +/-%1 uV   %2 s").arg(overviewGainUv, 0, 'f', 0).arg(m_windowSec, 0, 'f', 2);
+            ? QStringLiteral("%1+/-%2")
+                  .arg(manualOverviewGain ? QStringLiteral("m ") : QStringLiteral("a "))
+                  .arg(overviewGainUv, 0, 'f', 0)
+            : QStringLiteral("%1 +/-%2 uV   %3 s")
+                  .arg(manualOverviewGain ? QStringLiteral("manual") : QStringLiteral("auto"))
+                  .arg(overviewGainUv, 0, 'f', 0)
+                  .arg(m_windowSec, 0, 'f', 2);
         p.drawText(plotRect.adjusted(6, 0, -6, -3), Qt::AlignBottom | Qt::AlignRight, footer);
         p.restore();
     }
@@ -714,6 +728,8 @@ void StackedWaveWidget::wheelEvent(QWheelEvent *e)
                 const int maxPan = qMax(0, nAvail - nWin);
                 m_panSamples = qBound(0, m_panSamples, maxPan);
             }
+        } else if (m_mode == ViewMode::Overview) {
+            applyZoom(m_overviewGainScale, 0.82, m_overviewGainScaleMin, m_overviewGainScaleMax);
         } else {
             applyZoom(m_gainUv, 0.82, m_gainMin, m_gainMax);
         }
@@ -741,11 +757,13 @@ void StackedWaveWidget::contextMenuEvent(QContextMenuEvent *e)
     QMenu menu(this);
     QAction *focusAction = menu.addAction(m_mode == ViewMode::Overview ? tr("聚焦选中通道") : tr("返回总览"));
     QAction *autoGainAction = menu.addAction(tr("自动匹配当前通道幅度"));
+    QAction *resetOverviewGainAction = nullptr;
     QAction *growLaneAction = nullptr;
     QAction *shrinkLaneAction = nullptr;
     QAction *resetLaneAction = nullptr;
     if (m_mode == ViewMode::Overview) {
         menu.addSeparator();
+        resetOverviewGainAction = menu.addAction(tr("总览纵向范围恢复自动"));
         growLaneAction = menu.addAction(tr("增大总览框"));
         shrinkLaneAction = menu.addAction(tr("减小总览框"));
         resetLaneAction = menu.addAction(tr("总览框恢复默认"));
@@ -772,6 +790,8 @@ void StackedWaveWidget::contextMenuEvent(QContextMenuEvent *e)
             }
         } else if (selected == autoGainAction) {
             autoScaleSelectedLocked(currentViewRangeLocked());
+        } else if (selected == resetOverviewGainAction) {
+            m_overviewGainScale = 1.0;
         } else if (selected == growLaneAction) {
             m_overviewLaneHeight = qBound(m_overviewLaneHeightMin, m_overviewLaneHeight + 10, m_overviewLaneHeightMax);
             laneHeight = m_overviewLaneHeight;

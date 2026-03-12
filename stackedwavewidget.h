@@ -123,6 +123,10 @@ private:
     double m_gainMin = 10.0;
     double m_gainMax = 200000.0;
 
+    double m_overviewGainScale = 1.0;
+    double m_overviewGainScaleMin = 0.20;
+    double m_overviewGainScaleMax = 20.0;
+
     int m_overviewLaneHeight = 58;
     int m_overviewLaneHeightMin = 28;
     int m_overviewLaneHeightMax = 180;
