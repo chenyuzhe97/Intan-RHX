@@ -97,9 +97,9 @@ void AcquisitionEngine::startContinuousAcquisition()
         return;
     }
 
-    // 采集模式：连续
+    // 采集模式：连续 + 刺激命令模式
     m_rhxController->setContinuousRunMode(true);
-    m_rhxController->setStimCmdMode(false);   // ⭐ 开启刺激命令模式
+    m_rhxController->setStimCmdMode(true);
 
     // 开始 SPI 采集（同时可以收数 + 刺激）
     m_rhxController->run();
@@ -129,6 +129,10 @@ void AcquisitionEngine::stopAcquisition()
             QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
         }
     }
+
+    m_rhxController->setStimCmdMode(false);
+    m_rhxController->setMaxTimeStep(0);
+    m_rhxController->resetSequencers();
 
     // 清 FIFO
     m_rhxController->flush();
@@ -273,10 +277,15 @@ void AcquisitionEngine::configureStim(const QString &electrodeName,
     ElectrodeParameters *ele =
         new ElectrodeParameters(electrodeName.toStdString());
 
+    const int refractoryPeriod_us = qMax(1000,
+                                         firstPhaseDuration_us + secondPhaseDuration_us + interPhaseDelay_us);
+
     ele->SetStimulationTiming(0,
                               firstPhaseDuration_us,
                               secondPhaseDuration_us,
-                              interPhaseDelay_us);
+                              refractoryPeriod_us);
+    ele->interphaseDelay = interPhaseDelay_us;
+    ele->refractoryPeriod = refractoryPeriod_us;
     ele->SetStimulationAmplitude(firstPhaseAmplitude,
                                  secondPhaseAmplitude);
     ele->SetStimulationSource(triggerSource);

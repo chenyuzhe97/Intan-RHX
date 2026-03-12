@@ -73,6 +73,7 @@ private:
     void setupManualStimDock();
     void loadManualStimConfig();
     void saveManualStimConfig() const;
+    QString buildManualStimSummary() const;
     QString manualStimElectrodeName() const;
     bool configureManualStimHardware(QString *summary = nullptr);
 
@@ -161,6 +162,8 @@ private:
     QSpinBox    *m_spinManualFirstPhaseUs = nullptr;
     QSpinBox    *m_spinManualSecondPhaseUs = nullptr;
     QSpinBox    *m_spinManualInterphaseUs = nullptr;
+    bool         m_manualStimConfigApplied = false;
+    QString      m_manualStimAppliedSummary;
 
     // ====== 你要自定义的：每个 phase 用哪些通道做区域平均 ======
     // 注意：内部存的是 0-based index（用于 channelData[ch]）。GUI 显示/输入用 1-based。

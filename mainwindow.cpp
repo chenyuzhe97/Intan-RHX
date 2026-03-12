@@ -674,6 +674,28 @@ void MainWindow::saveManualStimConfig() const
     s.setValue("manual_stim/interphase_us", m_spinManualInterphaseUs->value());
 }
 
+QString MainWindow::buildManualStimSummary() const
+{
+    const QString electrodeName = manualStimElectrodeName();
+    const int triggerSource = m_spinManualTriggerSource ? m_spinManualTriggerSource->value() : 0;
+    const int firstAmp = m_spinManualFirstAmp ? m_spinManualFirstAmp->value() : 20;
+    const int secondAmp = m_spinManualSecondAmp ? m_spinManualSecondAmp->value() : 20;
+    const int pulses = m_spinManualPulseCount ? m_spinManualPulseCount->value() : 1;
+    const int firstPhaseUs = m_spinManualFirstPhaseUs ? m_spinManualFirstPhaseUs->value() : 500;
+    const int secondPhaseUs = m_spinManualSecondPhaseUs ? m_spinManualSecondPhaseUs->value() : 500;
+    const int interphaseUs = m_spinManualInterphaseUs ? m_spinManualInterphaseUs->value() : 500;
+
+    return QStringLiteral("电极=%1 trigger=%2 一相=%3 uA 二相=%4 uA 脉冲=%5 时宽=%6/%7 us 间隔=%8 us")
+        .arg(electrodeName)
+        .arg(triggerSource)
+        .arg(firstAmp)
+        .arg(secondAmp)
+        .arg(pulses)
+        .arg(firstPhaseUs)
+        .arg(secondPhaseUs)
+        .arg(interphaseUs);
+}
+
 QString MainWindow::manualStimElectrodeName() const
 {
     if (!m_cmbManualStimPrefix || !m_spinManualStimElectrode) {
@@ -687,6 +709,20 @@ QString MainWindow::manualStimElectrodeName() const
 
 bool MainWindow::configureManualStimHardware(QString *summary)
 {
+    const QString detail = buildManualStimSummary();
+    if (summary) {
+        *summary = detail;
+    }
+
+    if (!m_engine || !m_engine->rhx() || !m_engine->stimController()) {
+        return false;
+    }
+
+    if (m_closedLoopExperimentActive) {
+        appendLog(QStringLiteral("闭环实验运行中，不能应用普通采集刺激配置"));
+        return false;
+    }
+
     const QString electrodeName = manualStimElectrodeName();
     const int triggerSource = m_spinManualTriggerSource ? m_spinManualTriggerSource->value() : 0;
     const int firstAmp = m_spinManualFirstAmp ? m_spinManualFirstAmp->value() : 20;
@@ -696,21 +732,12 @@ bool MainWindow::configureManualStimHardware(QString *summary)
     const int secondPhaseUs = m_spinManualSecondPhaseUs ? m_spinManualSecondPhaseUs->value() : 500;
     const int interphaseUs = m_spinManualInterphaseUs ? m_spinManualInterphaseUs->value() : 500;
 
-    const QString detail = QStringLiteral("电极=%1 trigger=%2 一相=%3 uA 二相=%4 uA 脉冲=%5 时宽=%6/%7 us 间隔=%8 us")
-                               .arg(electrodeName)
-                               .arg(triggerSource)
-                               .arg(firstAmp)
-                               .arg(secondAmp)
-                               .arg(pulses)
-                               .arg(firstPhaseUs)
-                               .arg(secondPhaseUs)
-                               .arg(interphaseUs);
-    if (summary) {
-        *summary = detail;
-    }
-
-    if (!m_engine || !m_engine->rhx() || !m_engine->stimController()) {
-        return false;
+    const bool resumeContinuous = m_engine->isContinuousRunning();
+    if (resumeContinuous) {
+        appendLog(QStringLiteral("普通采集刺激配置：暂停普通采集，按官方流程下发刺激参数"));
+        m_engine->stopAcquisition();
+    } else {
+        appendLog(QStringLiteral("普通采集刺激配置：按官方流程下发刺激参数"));
     }
 
     m_engine->configureStim(electrodeName,
@@ -721,6 +748,14 @@ bool MainWindow::configureManualStimHardware(QString *summary)
                             interphaseUs,
                             pulses,
                             triggerSource);
+
+    if (resumeContinuous) {
+        m_engine->startContinuousAcquisition();
+        if (!m_engine->isContinuousRunning()) {
+            appendLog(QStringLiteral("普通采集刺激配置：刺激参数已写入，但普通采集恢复失败"));
+        }
+    }
+
     return true;
 }
 
@@ -728,13 +763,24 @@ void MainWindow::applyManualStimConfigFromUi()
 {
     saveManualStimConfig();
 
-    QString summary;
-    if (!configureManualStimHardware(&summary)) {
-        appendLog(QStringLiteral("普通采集刺激参数已保存：%1（打开设备后可应用）").arg(summary));
+    const QString summary = buildManualStimSummary();
+    if (!m_engine || !m_engine->rhx() || !m_engine->stimController()) {
+        m_manualStimConfigApplied = false;
+        m_manualStimAppliedSummary.clear();
+        appendLog(QStringLiteral("普通采集刺激参数已保存：%1（打开设备并开始普通采集后再点击应用）").arg(summary));
         return;
     }
 
-    appendLog(QStringLiteral("普通采集刺激参数已应用：%1").arg(summary));
+    QString appliedSummary;
+    if (!configureManualStimHardware(&appliedSummary)) {
+        m_manualStimConfigApplied = false;
+        m_manualStimAppliedSummary.clear();
+        return;
+    }
+
+    m_manualStimConfigApplied = true;
+    m_manualStimAppliedSummary = appliedSummary;
+    appendLog(QStringLiteral("普通采集刺激参数已应用：%1").arg(appliedSummary));
 }
 
 void MainWindow::setupElectrodeConfigDock()
@@ -1021,8 +1067,14 @@ void MainWindow::onOpenDevice()
         );
     if (path.isEmpty()) return;
 
-    if (!m_engine->openDevice(path)) appendLog("打开设备失败");
-    else appendLog("打开设备成功");
+    if (!m_engine->openDevice(path)) {
+        appendLog("打开设备失败");
+        return;
+    }
+
+    m_manualStimConfigApplied = false;
+    m_manualStimAppliedSummary.clear();
+    appendLog("打开设备成功");
 }
 
 void MainWindow::onStart()
@@ -1059,6 +1111,9 @@ void MainWindow::onStartClosedLoop()
         m_engine->startContinuousAcquisition();
     }
     if (!m_engine->isContinuousRunning()) return;
+
+    m_manualStimConfigApplied = false;
+    m_manualStimAppliedSummary.clear();
 
     if (m_closedLoopExperimentActive) {
         if (m_timeline) {
@@ -1153,9 +1208,24 @@ void MainWindow::onStimOnce()
 {
     saveManualStimConfig();
 
-    QString summary;
-    if (!configureManualStimHardware(&summary)) {
-        appendLog(QStringLiteral("未触发普通采集刺激：%1（请先打开设备）").arg(summary));
+    if (!m_engine || !m_engine->rhx() || !m_engine->stimController()) {
+        appendLog(QStringLiteral("未触发普通采集刺激：请先打开设备"));
+        return;
+    }
+
+    if (m_closedLoopExperimentActive) {
+        appendLog(QStringLiteral("闭环实验运行中，不执行普通采集手动触发"));
+        return;
+    }
+
+    if (!m_engine->isContinuousRunning()) {
+        appendLog(QStringLiteral("未触发普通采集刺激：请先开始普通采集"));
+        return;
+    }
+
+    const QString summary = buildManualStimSummary();
+    if (!m_manualStimConfigApplied || m_manualStimAppliedSummary != summary) {
+        appendLog(QStringLiteral("普通采集刺激参数已变更，请先点击\"应用刺激配置\"再触发"));
         return;
     }
 
