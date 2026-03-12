@@ -864,7 +864,6 @@ void MainWindow::applyManualStimConfigFromUi()
     m_manualStimAppliedSummary = appliedSummary;
     m_manualStimAppliedSignature = signature;
     appendLog(QStringLiteral("普通采集刺激参数已应用：%1").arg(appliedSummary));
-    appendLog(QStringLiteral("[ManualStim] applied signature=%1").arg(m_manualStimAppliedSignature));
 }
 
 void MainWindow::setupElectrodeConfigDock()
@@ -1319,19 +1318,29 @@ void MainWindow::onStimOnce()
     const bool appliedMatchesCurrent = m_manualStimConfigApplied && (m_manualStimAppliedSignature == signature);
     m_manualStimConfigDirty = !appliedMatchesCurrent;
     if (!appliedMatchesCurrent) {
-        appendLog(QStringLiteral("普通采集刺激参数已变更，请先点击\"应用刺激配置\"再触发"));
-        appendLog(QStringLiteral("[ManualStim] applied=%1 dirty=%2").arg(m_manualStimConfigApplied ? QStringLiteral("true") : QStringLiteral("false"), m_manualStimConfigDirty ? QStringLiteral("true") : QStringLiteral("false")));
-        appendLog(QStringLiteral("[ManualStim] current signature=%1").arg(signature));
-        appendLog(QStringLiteral("[ManualStim] applied signature=%1").arg(m_manualStimAppliedSignature));
-        appendLog(QStringLiteral("[ManualStim] current summary=%1").arg(summary));
-        appendLog(QStringLiteral("[ManualStim] applied summary=%1").arg(m_manualStimAppliedSummary));
-        return;
+        appendLog(QStringLiteral("普通采集刺激配置状态丢失，正在按当前参数重新应用"));
+
+        QString appliedSummary;
+        if (!configureManualStimHardware(&appliedSummary)) {
+            m_manualStimConfigApplied = false;
+            m_manualStimConfigDirty = true;
+            m_manualStimAppliedSummary.clear();
+            m_manualStimAppliedSignature.clear();
+            appendLog(QStringLiteral("普通采集刺激配置重新应用失败，本次未触发"));
+            return;
+        }
+
+        m_manualStimConfigApplied = true;
+        m_manualStimConfigDirty = false;
+        m_manualStimAppliedSummary = appliedSummary;
+        m_manualStimAppliedSignature = signature;
+        appendLog(QStringLiteral("普通采集刺激参数已重新应用：%1").arg(appliedSummary));
     }
 
     const int triggerSource = m_spinManualTriggerSource ? m_spinManualTriggerSource->value() : 0;
     m_engine->triggerStim(triggerSource, true);
     m_engine->triggerStim(triggerSource, false);
-    appendLog(QStringLiteral("已手动触发一次普通采集刺激：%1").arg(summary));
+    appendLog(QStringLiteral("已手动触发一次普通采集刺激：%1").arg(m_manualStimAppliedSummary.isEmpty() ? summary : m_manualStimAppliedSummary));
 }
 
 void MainWindow::onEpochDurationChanged(double sec)
