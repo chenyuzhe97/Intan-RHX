@@ -7,6 +7,9 @@
 
 #include "dsp_biquad.h"
 
+class QResizeEvent;
+class QScrollBar;
+
 class StackedWaveWidget : public QWidget
 {
     Q_OBJECT
@@ -20,9 +23,11 @@ public:
     void setTitle(const QString &t) { m_title = t; }
     void setGainUv(double halfRangeUv);              // ±uV
     void setWindowSec(double sec);                   // 显示时窗（秒）
+    void setOverviewLaneHeight(int px);              // 总览中每个框的高度
 
 signals:
     void selectedChannelChanged(int ch);
+    void overviewLaneHeightChanged(int px);
 
 public slots:
     void pushBlock(const QVector<uint32_t> &timeStamps,
@@ -30,6 +35,7 @@ public slots:
 
 protected:
     void paintEvent(QPaintEvent*) override;
+    void resizeEvent(QResizeEvent *e) override;
     void mousePressEvent(QMouseEvent *e) override;
     void mouseDoubleClickEvent(QMouseEvent *e) override;
     void mouseMoveEvent(QMouseEvent *e) override;
@@ -83,6 +89,8 @@ private:
 
     int pickChannelAtPos(const QPoint &pos, const QRect &contentRect) const;
     int overviewColumnCount(const QRect &contentRect) const;
+    int overviewContentHeight(const QRect &contentRect) const;
+    QRect overviewViewportRect() const;
     QRect overviewCardRect(const QRect &contentRect, int ch) const;
     ViewRange currentViewRangeLocked() const;
     ChannelStats computeStatsLocked(const Ring &ring, const ViewRange &range) const;
@@ -99,6 +107,7 @@ private:
     void drawTimeRuler(QPainter &p, const QRect &plotRect) const;
     void resetView();
     void autoScaleSelectedLocked(const ViewRange &range);
+    void updateOverviewScrollBarLocked();
 
 private:
     QVector<Ring> m_rings;
@@ -113,6 +122,10 @@ private:
     double m_gainUv = 500.0;     // ±gainUv
     double m_gainMin = 10.0;
     double m_gainMax = 200000.0;
+
+    int m_overviewLaneHeight = 58;
+    int m_overviewLaneHeightMin = 28;
+    int m_overviewLaneHeightMax = 180;
 
     QString m_title;
     bool m_hasData = false;
@@ -130,6 +143,7 @@ private:
     int  m_panSamplesAtDragStart = 0;
 
     QTimer m_repaint;
+    QScrollBar *m_overviewScrollBar = nullptr;
     mutable QMutex m_mtx;
 
 public:
@@ -154,6 +168,7 @@ public:
     bool copySamplesForFft(int ch, int N, QVector<float> &out) const;
     double sampleRateHz() const { return m_fs; }
     int selectedChannel() const { return m_selectedCh; }
+    int overviewLaneHeight() const { return m_overviewLaneHeight; }
 
 private:
     FilterSettings m_filt;

@@ -5,6 +5,8 @@
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QResizeEvent>
+#include <QScrollBar>
 #include <QWheelEvent>
 #include <QtMath>
 
@@ -15,6 +17,11 @@ StackedWaveWidget::StackedWaveWidget(QWidget *parent) : QWidget(parent)
 {
     setMinimumSize(560, 420);
     setMouseTracking(true);
+
+    m_overviewScrollBar = new QScrollBar(Qt::Vertical, this);
+    m_overviewScrollBar->hide();
+    m_overviewScrollBar->setFocusPolicy(Qt::NoFocus);
+    connect(m_overviewScrollBar, &QScrollBar::valueChanged, this, QOverload<>::of(&StackedWaveWidget::update));
 
     m_repaint.setInterval(33); // ~30 fps
     connect(&m_repaint, &QTimer::timeout, this, QOverload<>::of(&StackedWaveWidget::update));
@@ -45,6 +52,7 @@ void StackedWaveWidget::configure(int channels, double sampleRateHz, double wind
     m_selectedCh = 0;
     m_hoverCh = -1;
     resetView();
+    updateOverviewScrollBarLocked();
 }
 
 void StackedWaveWidget::setGainUv(double halfRangeUv)
@@ -57,6 +65,23 @@ void StackedWaveWidget::setWindowSec(double sec)
 {
     QMutexLocker lk(&m_mtx);
     m_windowSec = qBound(m_windowSecMin, sec, m_windowSecMax);
+}
+
+void StackedWaveWidget::setOverviewLaneHeight(int px)
+{
+    bool changed = false;
+    {
+        QMutexLocker lk(&m_mtx);
+        const int clamped = qBound(m_overviewLaneHeightMin, px, m_overviewLaneHeightMax);
+        if (clamped != m_overviewLaneHeight) {
+            m_overviewLaneHeight = clamped;
+            updateOverviewScrollBarLocked();
+            changed = true;
+        }
+    }
+
+    if (changed) emit overviewLaneHeightChanged(m_overviewLaneHeight);
+    if (changed) update();
 }
 
 void StackedWaveWidget::pushBlock(const QVector<uint32_t> &timeStamps,
@@ -86,27 +111,41 @@ void StackedWaveWidget::pushBlock(const QVector<uint32_t> &timeStamps,
 
 int StackedWaveWidget::overviewColumnCount(const QRect &contentRect) const
 {
-    if (m_channels <= 8) return 1;
-
-    const int singleColumnHeight = (contentRect.height() - 6 * (m_channels - 1)) / qMax(1, m_channels);
-    if (m_channels > 10 && contentRect.width() >= 680 && singleColumnHeight < 34) {
-        return 2;
-    }
+    Q_UNUSED(contentRect);
     return 1;
+}
+
+int StackedWaveWidget::overviewContentHeight(const QRect &contentRect) const
+{
+    Q_UNUSED(contentRect);
+    const int gap = 8;
+    return m_channels * m_overviewLaneHeight + qMax(0, m_channels - 1) * gap;
+}
+
+QRect StackedWaveWidget::overviewViewportRect() const
+{
+    QRect contentRect = rect().adjusted(12, 54, -12, -14);
+    if (m_mode == ViewMode::Overview && m_overviewScrollBar && m_overviewScrollBar->isVisible()) {
+        contentRect.adjust(0, 0, -(m_overviewScrollBar->width() + 8), 0);
+    }
+    return contentRect;
 }
 
 QRect StackedWaveWidget::overviewCardRect(const QRect &contentRect, int ch) const
 {
     const int columns = overviewColumnCount(contentRect);
-    const int rows = qMax(1, (m_channels + columns - 1) / columns);
     const int gap = 8;
+    const int scroll = (m_mode == ViewMode::Overview && m_overviewScrollBar && m_overviewScrollBar->isVisible())
+        ? m_overviewScrollBar->value()
+        : 0;
+
     const int cellW = (contentRect.width() - gap * (columns - 1)) / columns;
-    const int cellH = (contentRect.height() - gap * (rows - 1)) / rows;
+    const int cellH = m_overviewLaneHeight;
 
     const int row = ch / columns;
     const int col = ch % columns;
     const int x = contentRect.left() + col * (cellW + gap);
-    const int y = contentRect.top() + row * (cellH + gap);
+    const int y = contentRect.top() + row * (cellH + gap) - scroll;
     return QRect(x, y, cellW, cellH);
 }
 
@@ -188,7 +227,7 @@ void StackedWaveWidget::drawHeader(QPainter &p, const QRect &rect) const
 
     p.setFont(QFont(titleFont.family(), titleFont.pointSize() - 1, QFont::Medium));
     const QString modeText = (m_mode == ViewMode::Overview)
-        ? QStringLiteral("Stacked lanes (per-channel auto-scale)")
+        ? QStringLiteral("Stacked lanes (scrollable)")
         : QStringLiteral("Focus CH%1").arg(m_focusCh + 1, 2, 10, QChar('0'));
 
     QString filterText = QStringLiteral("RAW");
@@ -205,15 +244,16 @@ void StackedWaveWidget::drawHeader(QPainter &p, const QRect &rect) const
         filterText += QStringLiteral(" + Notch %1").arg(m_filt.notch_hz, 0, 'f', 0);
     }
 
-    const QString meta = QStringLiteral("%1   |   CH%2   |   %3 s   |   ±%4 µV   |   %5")
+    const QString meta = QStringLiteral("%1   |   CH%2   |   %3 s   |   ±%4 µV   |   lane %5 px   |   %6")
                              .arg(modeText)
                              .arg(m_selectedCh + 1, 2, 10, QChar('0'))
                              .arg(m_windowSec, 0, 'f', 2)
                              .arg(m_gainUv, 0, 'f', 0)
+                             .arg(m_overviewLaneHeight)
                              .arg(filterText);
 
     p.setPen(QColor(139, 169, 181));
-    p.drawText(headerRect.adjusted(320, 0, -14, 0), Qt::AlignVCenter | Qt::AlignRight, meta);
+    p.drawText(headerRect.adjusted(360, 0, -14, 0), Qt::AlignVCenter | Qt::AlignRight, meta);
     p.restore();
 }
 
@@ -275,25 +315,26 @@ void StackedWaveWidget::drawOverview(QPainter &p, const QRect &contentRect, cons
     const QColor laneBorder(35, 55, 68);
     const QColor laneHover(64, 194, 176);
     const QColor laneSelected(244, 196, 82);
-    const QColor tagFill(22, 35, 46);
+    const QColor tagFill(12, 22, 30);
     const QColor wave(106, 246, 232);
     const QColor waveHover(166, 248, 239);
     const QColor waveSelected(255, 221, 128);
 
     for (int ch = 0; ch < m_channels; ++ch) {
         const QRect outer = overviewCardRect(contentRect, ch);
-        if (outer.width() < 220 || outer.height() < 24) continue;
+        if (outer.bottom() < contentRect.top() - 2 || outer.top() > contentRect.bottom() + 2) continue;
+        if (outer.width() < 260 || outer.height() < 26) continue;
 
-        const bool compact = outer.height() < 48;
+        const bool compact = outer.height() < 54;
         const int pad = compact ? 5 : 7;
-        const int tagW = compact ? 76 : 108;
+        const int tagW = compact ? 88 : 124;
         const QRect tagRect(outer.left() + pad, outer.top() + pad, tagW, outer.height() - pad * 2);
         const int plotX = tagRect.right() + 8;
         const QRect plotRect(plotX,
                              outer.top() + pad,
                              outer.right() - pad - plotX + 1,
                              outer.height() - pad * 2);
-        if (plotRect.width() < 36 || plotRect.height() < 14) continue;
+        if (plotRect.width() < 40 || plotRect.height() < 16) continue;
 
         const bool isSelected = (ch == m_selectedCh);
         const bool isHover = (ch == m_hoverCh);
@@ -313,7 +354,7 @@ void StackedWaveWidget::drawOverview(QPainter &p, const QRect &contentRect, cons
         labelFont.setBold(true);
         labelFont.setPointSize(qMax(8, labelFont.pointSize() - (compact ? 1 : 0)));
         p.setFont(labelFont);
-        p.setPen(QColor(242, 247, 250));
+        p.setPen(QColor(221, 233, 239));
         p.drawText(tagRect.adjusted(8, compact ? 2 : 4, -6, 0), Qt::AlignLeft | Qt::AlignTop,
                    QStringLiteral("CH %1").arg(ch + 1, 2, 10, QChar('0')));
 
@@ -344,7 +385,9 @@ void StackedWaveWidget::drawOverview(QPainter &p, const QRect &contentRect, cons
                 ? QStringLiteral("R%1 P%2").arg(stats.rmsUv, 0, 'f', 0).arg(stats.p2pUv, 0, 'f', 0)
                 : QStringLiteral("RMS %1\nP2P %2").arg(stats.rmsUv, 0, 'f', 0).arg(stats.p2pUv, 0, 'f', 0))
             : QStringLiteral("Waiting");
-        p.drawText(tagRect.adjusted(8, compact ? 16 : 24, -6, -4), compact ? (Qt::AlignLeft | Qt::AlignVCenter) : (Qt::AlignLeft | Qt::AlignTop), statText);
+        p.drawText(tagRect.adjusted(8, compact ? 16 : 24, -6, -4),
+                   compact ? (Qt::AlignLeft | Qt::AlignVCenter) : (Qt::AlignLeft | Qt::AlignTop),
+                   statText);
 
         p.setPen(QPen(QColor(42, 61, 74), 1));
         p.setBrush(QColor(7, 12, 17));
@@ -352,8 +395,8 @@ void StackedWaveWidget::drawOverview(QPainter &p, const QRect &contentRect, cons
 
         p.setClipRect(plotRect.adjusted(1, 1, -1, -1));
         p.setPen(QColor(27, 40, 49));
-        for (int g = 1; g <= 3; ++g) {
-            const int x = plotRect.left() + plotRect.width() * g / 4;
+        for (int g = 1; g <= 4; ++g) {
+            const int x = plotRect.left() + plotRect.width() * g / 5;
             p.drawLine(x, plotRect.top() + 3, x, plotRect.bottom() - 3);
         }
         if (!compact) {
@@ -474,6 +517,33 @@ void StackedWaveWidget::autoScaleSelectedLocked(const ViewRange &range)
     m_gainUv = qBound(m_gainMin, double(peakAbs) * 1.35, m_gainMax);
 }
 
+void StackedWaveWidget::updateOverviewScrollBarLocked()
+{
+    if (!m_overviewScrollBar) return;
+
+    const QRect baseRect = rect().adjusted(12, 54, -12, -14);
+    if (baseRect.width() < 40 || baseRect.height() < 40 || m_mode != ViewMode::Overview) {
+        m_overviewScrollBar->hide();
+        m_overviewScrollBar->setValue(0);
+        return;
+    }
+
+    const int contentHeight = overviewContentHeight(baseRect);
+    const bool needScroll = contentHeight > baseRect.height();
+    if (!needScroll) {
+        m_overviewScrollBar->hide();
+        m_overviewScrollBar->setValue(0);
+        return;
+    }
+
+    const int scrollW = 14;
+    m_overviewScrollBar->setGeometry(baseRect.right() - scrollW + 1, baseRect.top() + 2, scrollW, baseRect.height() - 4);
+    m_overviewScrollBar->setPageStep(baseRect.height());
+    m_overviewScrollBar->setSingleStep(qMax(12, m_overviewLaneHeight / 3));
+    m_overviewScrollBar->setRange(0, qMax(0, contentHeight - baseRect.height()));
+    m_overviewScrollBar->show();
+}
+
 void StackedWaveWidget::paintEvent(QPaintEvent*)
 {
     QPainter p(this);
@@ -484,10 +554,11 @@ void StackedWaveWidget::paintEvent(QPaintEvent*)
     bg.setColorAt(1.0, QColor(5, 9, 13));
     p.fillRect(rect(), bg);
 
-    const QRect contentRect = rect().adjusted(12, 54, -12, -14);
     drawHeader(p, rect());
 
     QMutexLocker lk(&m_mtx);
+    updateOverviewScrollBarLocked();
+    const QRect contentRect = overviewViewportRect();
     if (m_rings.isEmpty() || contentRect.width() < 60 || contentRect.height() < 60) return;
 
     const ViewRange range = currentViewRangeLocked();
@@ -498,14 +569,22 @@ void StackedWaveWidget::paintEvent(QPaintEvent*)
     }
 }
 
+void StackedWaveWidget::resizeEvent(QResizeEvent *e)
+{
+    QWidget::resizeEvent(e);
+    QMutexLocker lk(&m_mtx);
+    updateOverviewScrollBarLocked();
+}
+
 void StackedWaveWidget::mousePressEvent(QMouseEvent *e)
 {
-    const QRect contentRect = rect().adjusted(12, 54, -12, -14);
-    if (e->button() != Qt::LeftButton || !contentRect.contains(e->pos())) return;
-
     int changedCh = -1;
     {
         QMutexLocker lk(&m_mtx);
+        updateOverviewScrollBarLocked();
+        const QRect contentRect = overviewViewportRect();
+        if (e->button() != Qt::LeftButton || !contentRect.contains(e->pos())) return;
+
         const int ch = pickChannelAtPos(e->pos(), contentRect);
         if (ch >= 0 && ch != m_selectedCh) {
             m_selectedCh = ch;
@@ -530,8 +609,9 @@ void StackedWaveWidget::mouseDoubleClickEvent(QMouseEvent *e)
     int changedCh = -1;
     {
         QMutexLocker lk(&m_mtx);
+        updateOverviewScrollBarLocked();
         if (m_mode == ViewMode::Overview) {
-            const QRect contentRect = rect().adjusted(12, 54, -12, -14);
+            const QRect contentRect = overviewViewportRect();
             const int ch = pickChannelAtPos(e->pos(), contentRect);
             if (ch >= 0 && ch != m_selectedCh) {
                 m_selectedCh = ch;
@@ -542,6 +622,7 @@ void StackedWaveWidget::mouseDoubleClickEvent(QMouseEvent *e)
             m_panSamples = 0;
         } else {
             resetView();
+            updateOverviewScrollBarLocked();
         }
     }
 
@@ -551,10 +632,11 @@ void StackedWaveWidget::mouseDoubleClickEvent(QMouseEvent *e)
 
 void StackedWaveWidget::mouseMoveEvent(QMouseEvent *e)
 {
-    const QRect contentRect = rect().adjusted(12, 54, -12, -14);
+    QMutexLocker lk(&m_mtx);
+    updateOverviewScrollBarLocked();
+    const QRect contentRect = overviewViewportRect();
 
     if (m_dragging) {
-        QMutexLocker lk(&m_mtx);
         if (m_mode != ViewMode::Single || m_rings.isEmpty()) return;
 
         const int plotW = qMax(10, contentRect.width() - 32);
@@ -570,20 +652,14 @@ void StackedWaveWidget::mouseMoveEvent(QMouseEvent *e)
         return;
     }
 
-    bool needUpdate = false;
-    {
-        QMutexLocker lk(&m_mtx);
-        int hover = -1;
-        if (contentRect.contains(e->pos()) && m_mode == ViewMode::Overview) {
-            hover = pickChannelAtPos(e->pos(), contentRect);
-        }
-        if (hover != m_hoverCh) {
-            m_hoverCh = hover;
-            needUpdate = true;
-        }
+    int hover = -1;
+    if (contentRect.contains(e->pos()) && m_mode == ViewMode::Overview) {
+        hover = pickChannelAtPos(e->pos(), contentRect);
     }
-
-    if (needUpdate) update();
+    if (hover != m_hoverCh) {
+        m_hoverCh = hover;
+        update();
+    }
 }
 
 void StackedWaveWidget::mouseReleaseEvent(QMouseEvent *e)
@@ -595,31 +671,53 @@ void StackedWaveWidget::mouseReleaseEvent(QMouseEvent *e)
 
 void StackedWaveWidget::wheelEvent(QWheelEvent *e)
 {
-    QMutexLocker lk(&m_mtx);
+    bool laneChanged = false;
+    int laneHeight = m_overviewLaneHeight;
 
-    const bool ctrl = (e->modifiers() & Qt::ControlModifier);
-    const int steps = (e->angleDelta().y() / 120);
-    if (steps == 0) return;
+    {
+        QMutexLocker lk(&m_mtx);
+        updateOverviewScrollBarLocked();
 
-    auto applyZoom = [&](double &val, double factor, double vmin, double vmax){
-        if (steps > 0) val *= factor;
-        else          val /= factor;
-        val = qBound(vmin, val, vmax);
-    };
+        const bool ctrl = (e->modifiers() & Qt::ControlModifier);
+        const bool shift = (e->modifiers() & Qt::ShiftModifier);
+        const int steps = (e->angleDelta().y() / 120);
+        if (steps == 0) return;
 
-    if (ctrl) {
-        applyZoom(m_windowSec, 0.82, m_windowSecMin, m_windowSecMax);
+        auto applyZoom = [&](double &val, double factor, double vmin, double vmax){
+            if (steps > 0) val *= factor;
+            else          val /= factor;
+            val = qBound(vmin, val, vmax);
+        };
 
-        if (!m_rings.isEmpty()) {
-            const int nAvail = m_rings[0].size();
-            const int nWin = qMin(nAvail, int(m_windowSec * m_fs));
-            const int maxPan = qMax(0, nAvail - nWin);
-            m_panSamples = qBound(0, m_panSamples, maxPan);
+        if (m_mode == ViewMode::Overview && !ctrl && !shift) {
+            if (m_overviewScrollBar && m_overviewScrollBar->isVisible()) {
+                m_overviewScrollBar->setValue(m_overviewScrollBar->value() - steps * m_overviewScrollBar->singleStep());
+            }
+        } else if (m_mode == ViewMode::Overview && shift) {
+            const int nextHeight = qBound(m_overviewLaneHeightMin,
+                                          m_overviewLaneHeight + steps * 8,
+                                          m_overviewLaneHeightMax);
+            if (nextHeight != m_overviewLaneHeight) {
+                m_overviewLaneHeight = nextHeight;
+                laneHeight = nextHeight;
+                laneChanged = true;
+                updateOverviewScrollBarLocked();
+            }
+        } else if (ctrl) {
+            applyZoom(m_windowSec, 0.82, m_windowSecMin, m_windowSecMax);
+
+            if (!m_rings.isEmpty()) {
+                const int nAvail = m_rings[0].size();
+                const int nWin = qMin(nAvail, int(m_windowSec * m_fs));
+                const int maxPan = qMax(0, nAvail - nWin);
+                m_panSamples = qBound(0, m_panSamples, maxPan);
+            }
+        } else {
+            applyZoom(m_gainUv, 0.82, m_gainMin, m_gainMax);
         }
-    } else {
-        applyZoom(m_gainUv, 0.82, m_gainMin, m_gainMax);
     }
 
+    if (laneChanged) emit overviewLaneHeightChanged(laneHeight);
     update();
 }
 
@@ -628,7 +726,8 @@ void StackedWaveWidget::contextMenuEvent(QContextMenuEvent *e)
     int changedCh = -1;
     {
         QMutexLocker lk(&m_mtx);
-        const QRect contentRect = rect().adjusted(12, 54, -12, -14);
+        updateOverviewScrollBarLocked();
+        const QRect contentRect = overviewViewportRect();
         const int ch = pickChannelAtPos(e->pos(), contentRect);
         if (ch >= 0 && ch != m_selectedCh) {
             m_selectedCh = ch;
@@ -640,11 +739,23 @@ void StackedWaveWidget::contextMenuEvent(QContextMenuEvent *e)
     QMenu menu(this);
     QAction *focusAction = menu.addAction(m_mode == ViewMode::Overview ? tr("聚焦选中通道") : tr("返回总览"));
     QAction *autoGainAction = menu.addAction(tr("自动匹配当前通道幅度"));
+    QAction *growLaneAction = nullptr;
+    QAction *shrinkLaneAction = nullptr;
+    QAction *resetLaneAction = nullptr;
+    if (m_mode == ViewMode::Overview) {
+        menu.addSeparator();
+        growLaneAction = menu.addAction(tr("增大总览框"));
+        shrinkLaneAction = menu.addAction(tr("减小总览框"));
+        resetLaneAction = menu.addAction(tr("总览框恢复默认"));
+    }
+    menu.addSeparator();
     QAction *resetAction = menu.addAction(tr("重置视图"));
 
     QAction *selected = menu.exec(e->globalPos());
     if (!selected) return;
 
+    bool laneChanged = false;
+    int laneHeight = m_overviewLaneHeight;
     {
         QMutexLocker lk(&m_mtx);
         if (selected == focusAction) {
@@ -652,16 +763,35 @@ void StackedWaveWidget::contextMenuEvent(QContextMenuEvent *e)
                 m_mode = ViewMode::Single;
                 m_focusCh = m_selectedCh;
                 m_panSamples = 0;
+                updateOverviewScrollBarLocked();
             } else {
                 resetView();
+                updateOverviewScrollBarLocked();
             }
         } else if (selected == autoGainAction) {
             autoScaleSelectedLocked(currentViewRangeLocked());
+        } else if (selected == growLaneAction) {
+            m_overviewLaneHeight = qBound(m_overviewLaneHeightMin, m_overviewLaneHeight + 10, m_overviewLaneHeightMax);
+            laneHeight = m_overviewLaneHeight;
+            laneChanged = true;
+            updateOverviewScrollBarLocked();
+        } else if (selected == shrinkLaneAction) {
+            m_overviewLaneHeight = qBound(m_overviewLaneHeightMin, m_overviewLaneHeight - 10, m_overviewLaneHeightMax);
+            laneHeight = m_overviewLaneHeight;
+            laneChanged = true;
+            updateOverviewScrollBarLocked();
+        } else if (selected == resetLaneAction) {
+            m_overviewLaneHeight = 58;
+            laneHeight = m_overviewLaneHeight;
+            laneChanged = true;
+            updateOverviewScrollBarLocked();
         } else if (selected == resetAction) {
             resetView();
+            updateOverviewScrollBarLocked();
         }
     }
 
+    if (laneChanged) emit overviewLaneHeightChanged(laneHeight);
     update();
 }
 

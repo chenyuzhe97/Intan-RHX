@@ -12,6 +12,7 @@
 #include <QMessageBox>
 #include <QRegularExpression>
 #include <QTextDocument>
+#include <QSignalBlocker>
 
 static StackedWaveWidget::FilterSettings buildFilterSettingsFromUi(
     QCheckBox *chkFilter, QComboBox *cmbType,
@@ -193,6 +194,47 @@ void MainWindow::setupUi()
             background: #11202a;
             width: 8px;
         }
+        QScrollBar:vertical {
+            background: #0c141a;
+            border: 1px solid #203340;
+            border-radius: 7px;
+            width: 14px;
+            margin: 0px;
+        }
+        QScrollBar::handle:vertical {
+            background: #33515f;
+            border-radius: 6px;
+            min-height: 28px;
+        }
+        QScrollBar::handle:vertical:hover {
+            background: #44c8b2;
+        }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height: 0px;
+        }
+        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+            background: transparent;
+        }
+        QMenu {
+            background: #0d151b;
+            color: #d9e5eb;
+            border: 1px solid #233947;
+            padding: 6px;
+        }
+        QMenu::item {
+            padding: 7px 18px 7px 12px;
+            border-radius: 6px;
+            background: transparent;
+        }
+        QMenu::item:selected {
+            background: #17303a;
+            color: #f3f7f9;
+        }
+        QMenu::separator {
+            height: 1px;
+            background: #243845;
+            margin: 6px 8px;
+        }
     )");
 
     m_central = new QWidget(this);
@@ -256,6 +298,16 @@ void MainWindow::setupUi()
         m_spinGainB->setValue(500.0);
         m_spinGainB->setSuffix(" µV");
         row->addWidget(m_spinGainB);
+
+        row->addSpacing(20);
+        row->addWidget(new QLabel(tr("总览框高:"), this));
+        m_spinOverviewLane = new QSpinBox(this);
+        m_spinOverviewLane->setRange(28, 180);
+        m_spinOverviewLane->setSingleStep(8);
+        m_spinOverviewLane->setValue(58);
+        m_spinOverviewLane->setSuffix(" px");
+        m_spinOverviewLane->setToolTip(tr("调大后右侧滚动条会出现；Shift+滚轮也可以直接调总览框高。"));
+        row->addWidget(m_spinOverviewLane);
 
         row->addStretch(1);
         m_layout->addLayout(row);
@@ -352,6 +404,8 @@ void MainWindow::setupUi()
 
     m_viewA->setGainUv(m_spinGainA->value());
     m_viewB->setGainUv(m_spinGainB->value());
+    m_viewA->setOverviewLaneHeight(m_spinOverviewLane->value());
+    m_viewB->setOverviewLaneHeight(m_spinOverviewLane->value());
 
         m_split->addWidget(m_viewA);
     m_split->addWidget(m_viewB);
@@ -388,6 +442,8 @@ void MainWindow::setupUi()
             this, &MainWindow::onGainAChanged);
     connect(m_spinGainB, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, &MainWindow::onGainBChanged);
+    connect(m_spinOverviewLane, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, &MainWindow::onOverviewLaneHeightChanged);
 
     // DSP apply on any change
     connect(m_chkFilter, &QCheckBox::toggled, this, &MainWindow::applyDspSettings);
@@ -402,6 +458,11 @@ void MainWindow::setupUi()
     connect(m_spNotchQ, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, &MainWindow::applyDspSettings);
 
     connect(m_btnFFT, &QPushButton::clicked, this, &MainWindow::onToggleFftWindows);
+
+    connect(m_viewA, &StackedWaveWidget::overviewLaneHeightChanged,
+            this, &MainWindow::onOverviewLaneHeightChanged);
+    connect(m_viewB, &StackedWaveWidget::overviewLaneHeightChanged,
+            this, &MainWindow::onOverviewLaneHeightChanged);
 }
 
 void MainWindow::appendLog(const QString &msg)
@@ -410,6 +471,22 @@ void MainWindow::appendLog(const QString &msg)
     m_logView->appendPlainText(line);
 }
 
+void MainWindow::onOverviewLaneHeightChanged(int px)
+{
+    const int clamped = qBound(28, px, 180);
+
+    if (m_spinOverviewLane && m_spinOverviewLane->value() != clamped) {
+        QSignalBlocker blocker(m_spinOverviewLane);
+        m_spinOverviewLane->setValue(clamped);
+    }
+
+    if (m_viewA && m_viewA->overviewLaneHeight() != clamped) {
+        m_viewA->setOverviewLaneHeight(clamped);
+    }
+    if (m_viewB && m_viewB->overviewLaneHeight() != clamped) {
+        m_viewB->setOverviewLaneHeight(clamped);
+    }
+}
 void MainWindow::ensureTimelineVisible()
 {
     if (!m_timeline) return;

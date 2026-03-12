@@ -44,6 +44,7 @@ private slots:
     void onEpochDurationChanged(double sec);
     void onGainAChanged(double halfRangeUv);
     void onGainBChanged(double halfRangeUv);
+    void onOverviewLaneHeightChanged(int px);
 
     // DSP/FFT
     void applyDspSettings();
@@ -91,6 +92,7 @@ private:
     // ===== view gain =====
     QDoubleSpinBox *m_spinGainA = nullptr;   // ±uV
     QDoubleSpinBox *m_spinGainB = nullptr;   // ±uV
+    QSpinBox       *m_spinOverviewLane = nullptr;
 
     // ===== DSP controls =====
     QCheckBox *m_chkFilter = nullptr;
