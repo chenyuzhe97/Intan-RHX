@@ -5,7 +5,7 @@
 StimTimelineOverlay::StimTimelineOverlay(QWidget *parent) : QWidget(parent)
 {
     setWindowTitle("Stim Timeline");
-    setWindowFlags(Qt::Tool | Qt::WindowStaysOnTopHint);
+    setMinimumSize(420, 180);
     resize(520, 180);
 }
 

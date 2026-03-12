@@ -86,9 +86,18 @@ MainWindow::MainWindow(QWidget *parent)
             this,         &MainWindow::onABEpochReady);
 
     // ===== timeline + stim csv =====
-    m_timeline = new StimTimelineOverlay();
+    m_timeline = new StimTimelineOverlay(this);
     m_timeline->setEpochSec(colletion_time);
-    m_timeline->hide();
+
+    m_dockTimeline = new QDockWidget(tr("闭环刺激时序图"), this);
+    m_dockTimeline->setObjectName("dockTimelineOverlay");
+    m_dockTimeline->setAllowedAreas(Qt::RightDockWidgetArea | Qt::BottomDockWidgetArea);
+    m_dockTimeline->setWidget(m_timeline);
+    addDockWidget(Qt::RightDockWidgetArea, m_dockTimeline);
+    if (m_dockElectrode) {
+        splitDockWidget(m_dockElectrode, m_dockTimeline, Qt::Vertical);
+    }
+    m_dockTimeline->hide();
 
     m_stimLog = new StimLogWriter(this);
     m_stimLog->start(QDir::currentPath() + "/stim_log.csv");
@@ -123,7 +132,8 @@ MainWindow::~MainWindow()
 
     if (m_fftA) m_fftA->close();
     if (m_fftB) m_fftB->close();
-    if (m_timeline) m_timeline->close();
+    if (m_dockTimeline) m_dockTimeline->close();
+    else if (m_timeline) m_timeline->close();
 }
 
 void MainWindow::setupUi()
@@ -477,6 +487,14 @@ void MainWindow::onOverviewLaneHeightChanged(int px)
 }
 void MainWindow::ensureTimelineVisible()
 {
+    if (m_timeline) {
+        m_timeline->show();
+    }
+    if (m_dockTimeline) {
+        m_dockTimeline->show();
+        m_dockTimeline->raise();
+        return;
+    }
     if (!m_timeline) return;
     const QRect g = this->geometry();
     m_timeline->move(g.topRight() + QPoint(20, 40));
@@ -636,6 +654,29 @@ void MainWindow::setupManualStimDock()
             this, &MainWindow::applyManualStimConfigFromUi);
     connect(m_btnStimOnce, &QPushButton::clicked,
             this, &MainWindow::onStimOnce);
+
+    auto markManualStimDirty = [this]() {
+        m_manualStimConfigDirty = true;
+    };
+
+    connect(m_cmbManualStimPrefix, &QComboBox::currentTextChanged, this,
+            [markManualStimDirty](const QString &) { markManualStimDirty(); });
+    connect(m_spinManualStimElectrode, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [markManualStimDirty](int) { markManualStimDirty(); });
+    connect(m_spinManualTriggerSource, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [markManualStimDirty](int) { markManualStimDirty(); });
+    connect(m_spinManualFirstAmp, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [markManualStimDirty](int) { markManualStimDirty(); });
+    connect(m_spinManualSecondAmp, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [markManualStimDirty](int) { markManualStimDirty(); });
+    connect(m_spinManualPulseCount, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [markManualStimDirty](int) { markManualStimDirty(); });
+    connect(m_spinManualFirstPhaseUs, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [markManualStimDirty](int) { markManualStimDirty(); });
+    connect(m_spinManualSecondPhaseUs, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [markManualStimDirty](int) { markManualStimDirty(); });
+    connect(m_spinManualInterphaseUs, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [markManualStimDirty](int) { markManualStimDirty(); });
 }
 
 void MainWindow::loadManualStimConfig()
@@ -779,6 +820,7 @@ void MainWindow::applyManualStimConfigFromUi()
     }
 
     m_manualStimConfigApplied = true;
+    m_manualStimConfigDirty = false;
     m_manualStimAppliedSummary = appliedSummary;
     appendLog(QStringLiteral("普通采集刺激参数已应用：%1").arg(appliedSummary));
 }
@@ -1073,6 +1115,7 @@ void MainWindow::onOpenDevice()
     }
 
     m_manualStimConfigApplied = false;
+    m_manualStimConfigDirty = true;
     m_manualStimAppliedSummary.clear();
     appendLog("打开设备成功");
 }
@@ -1091,7 +1134,8 @@ void MainWindow::onStart()
     if (m_experiment) m_experiment->stop();
     m_closedLoopExperimentActive = false;
 
-    if (m_timeline) m_timeline->hide();
+    if (m_dockTimeline) m_dockTimeline->hide();
+    else if (m_timeline) m_timeline->hide();
 
     if (!wasAcquiring) {
         appendLog("已开始普通采集");
@@ -1113,6 +1157,7 @@ void MainWindow::onStartClosedLoop()
     if (!m_engine->isContinuousRunning()) return;
 
     m_manualStimConfigApplied = false;
+    m_manualStimConfigDirty = true;
     m_manualStimAppliedSummary.clear();
 
     if (m_closedLoopExperimentActive) {
@@ -1155,7 +1200,8 @@ void MainWindow::onStop()
     if (m_engine && wasAcquiring) {
         m_engine->stopAcquisition();
     }
-    if (m_timeline) m_timeline->hide();
+    if (m_dockTimeline) m_dockTimeline->hide();
+    else if (m_timeline) m_timeline->hide();
 
     if (wasClosedLoop && wasAcquiring) {
         appendLog("已停止闭环实验采集");
@@ -1224,7 +1270,7 @@ void MainWindow::onStimOnce()
     }
 
     const QString summary = buildManualStimSummary();
-    if (!m_manualStimConfigApplied || m_manualStimAppliedSummary != summary) {
+    if (!m_manualStimConfigApplied || m_manualStimConfigDirty) {
         appendLog(QStringLiteral("普通采集刺激参数已变更，请先点击\"应用刺激配置\"再触发"));
         return;
     }

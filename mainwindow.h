@@ -138,6 +138,7 @@ private:
 
     // ===== stim timeline + csv =====
     StimTimelineOverlay *m_timeline = nullptr;
+    QDockWidget         *m_dockTimeline = nullptr;
     StimLogWriter       *m_stimLog  = nullptr;
 
     // ===== params =====
@@ -163,6 +164,7 @@ private:
     QSpinBox    *m_spinManualSecondPhaseUs = nullptr;
     QSpinBox    *m_spinManualInterphaseUs = nullptr;
     bool         m_manualStimConfigApplied = false;
+    bool         m_manualStimConfigDirty = true;
     QString      m_manualStimAppliedSummary;
 
     // ====== 你要自定义的：每个 phase 用哪些通道做区域平均 ======
