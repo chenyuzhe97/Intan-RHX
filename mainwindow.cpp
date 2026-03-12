@@ -864,6 +864,7 @@ void MainWindow::applyManualStimConfigFromUi()
     m_manualStimAppliedSummary = appliedSummary;
     m_manualStimAppliedSignature = signature;
     appendLog(QStringLiteral("普通采集刺激参数已应用：%1").arg(appliedSummary));
+    appendLog(QStringLiteral("[ManualStim] applied signature=%1").arg(m_manualStimAppliedSignature));
 }
 
 void MainWindow::setupElectrodeConfigDock()
@@ -1319,6 +1320,11 @@ void MainWindow::onStimOnce()
     m_manualStimConfigDirty = !appliedMatchesCurrent;
     if (!appliedMatchesCurrent) {
         appendLog(QStringLiteral("普通采集刺激参数已变更，请先点击\"应用刺激配置\"再触发"));
+        appendLog(QStringLiteral("[ManualStim] applied=%1 dirty=%2").arg(m_manualStimConfigApplied ? QStringLiteral("true") : QStringLiteral("false"), m_manualStimConfigDirty ? QStringLiteral("true") : QStringLiteral("false")));
+        appendLog(QStringLiteral("[ManualStim] current signature=%1").arg(signature));
+        appendLog(QStringLiteral("[ManualStim] applied signature=%1").arg(m_manualStimAppliedSignature));
+        appendLog(QStringLiteral("[ManualStim] current summary=%1").arg(summary));
+        appendLog(QStringLiteral("[ManualStim] applied summary=%1").arg(m_manualStimAppliedSummary));
         return;
     }
 
