@@ -24,6 +24,8 @@ public:
     void setGainUv(double halfRangeUv);              // ±uV
     void setWindowSec(double sec);                   // 显示时窗（秒）
     void setOverviewLaneHeight(int px);              // 总览中每个框的高度
+    void showAllChannels();
+    bool hasHiddenChannels() const;
 
 signals:
     void selectedChannelChanged(int ch);
@@ -92,6 +94,12 @@ private:
     int overviewContentHeight(const QRect &contentRect) const;
     QRect overviewViewportRect() const;
     QRect overviewCardRect(const QRect &contentRect, int ch) const;
+    int visibleChannelCountLocked() const;
+    int visibleChannelAtVisualIndexLocked(int visualIndex) const;
+    int visualIndexForChannelLocked(int ch) const;
+    int firstVisibleChannelLocked() const;
+    int currentChannelLocked() const;
+    void ensureSelectionVisibleLocked();
     ViewRange currentViewRangeLocked() const;
     ChannelStats computeStatsLocked(const Ring &ring, const ViewRange &range) const;
     void drawHeader(QPainter &p, const QRect &rect) const;
@@ -111,6 +119,7 @@ private:
 
 private:
     QVector<Ring> m_rings;
+    QVector<bool> m_channelHidden;
     int    m_channels = 16;
     double m_fs = 30000.0;
 

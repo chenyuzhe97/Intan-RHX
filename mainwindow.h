@@ -99,6 +99,7 @@ private:
     QPushButton    *m_btnStimOnce        = nullptr;
     QPushButton    *m_btnRecStart        = nullptr;
     QPushButton    *m_btnRecStop         = nullptr;
+    QPushButton    *m_btnShowAllChannels = nullptr;
     QPushButton    *m_btnApplyManualStim = nullptr;
 
     QDoubleSpinBox *m_spinEpochSec = nullptr;

@@ -76,6 +76,7 @@ void StackedWaveWidget::configure(int channels, double sampleRateHz, double wind
 
     const int cap = qMax(2048, int(qCeil((m_windowSecMax + 0.5) * m_fs)));
     m_rings.resize(m_channels);
+    m_channelHidden.fill(false, m_channels);
     for (int ch=0; ch<m_channels; ++ch) m_rings[ch].init(cap);
 
     m_hasData = false;
@@ -114,6 +115,31 @@ void StackedWaveWidget::setOverviewLaneHeight(int px)
     if (changed) update();
 }
 
+void StackedWaveWidget::showAllChannels()
+{
+    bool changed = false;
+    int changedCh = -1;
+    {
+        QMutexLocker lk(&m_mtx);
+        if (!m_channelHidden.contains(true)) return;
+        m_channelHidden.fill(false, m_channels);
+        const int previousCh = m_selectedCh;
+        ensureSelectionVisibleLocked();
+        updateOverviewScrollBarLocked();
+        changed = true;
+        if (m_selectedCh != previousCh) changedCh = m_selectedCh;
+    }
+
+    if (changedCh >= 0) emit selectedChannelChanged(changedCh);
+    if (changed) update();
+}
+
+bool StackedWaveWidget::hasHiddenChannels() const
+{
+    QMutexLocker lk(&m_mtx);
+    return m_channelHidden.contains(true);
+}
+
 void StackedWaveWidget::pushBlock(const QVector<uint32_t> &timeStamps,
                                   const QVector<QVector<int>> &channelData)
 {
@@ -149,7 +175,8 @@ int StackedWaveWidget::overviewContentHeight(const QRect &contentRect) const
 {
     Q_UNUSED(contentRect);
     const int gap = 8;
-    return m_channels * m_overviewLaneHeight + qMax(0, m_channels - 1) * gap;
+    const int visibleChannels = visibleChannelCountLocked();
+    return visibleChannels * m_overviewLaneHeight + qMax(0, visibleChannels - 1) * gap;
 }
 
 QRect StackedWaveWidget::overviewViewportRect() const
@@ -163,6 +190,9 @@ QRect StackedWaveWidget::overviewViewportRect() const
 
 QRect StackedWaveWidget::overviewCardRect(const QRect &contentRect, int ch) const
 {
+    const int visualIndex = visualIndexForChannelLocked(ch);
+    if (visualIndex < 0) return QRect();
+
     const int columns = overviewColumnCount(contentRect);
     const int gap = 8;
     const int scroll = (m_mode == ViewMode::Overview && m_overviewScrollBar && m_overviewScrollBar->isVisible())
@@ -172,17 +202,83 @@ QRect StackedWaveWidget::overviewCardRect(const QRect &contentRect, int ch) cons
     const int cellW = (contentRect.width() - gap * (columns - 1)) / columns;
     const int cellH = m_overviewLaneHeight;
 
-    const int row = ch / columns;
-    const int col = ch % columns;
+    const int row = visualIndex / columns;
+    const int col = visualIndex % columns;
     const int x = contentRect.left() + col * (cellW + gap);
     const int y = contentRect.top() + row * (cellH + gap) - scroll;
     return QRect(x, y, cellW, cellH);
 }
 
+int StackedWaveWidget::visibleChannelCountLocked() const
+{
+    int count = 0;
+    for (int ch = 0; ch < m_channelHidden.size(); ++ch) {
+        if (!m_channelHidden[ch]) ++count;
+    }
+    return count;
+}
+
+int StackedWaveWidget::visibleChannelAtVisualIndexLocked(int visualIndex) const
+{
+    if (visualIndex < 0) return -1;
+    int currentIndex = 0;
+    for (int ch = 0; ch < m_channelHidden.size(); ++ch) {
+        if (m_channelHidden[ch]) continue;
+        if (currentIndex == visualIndex) return ch;
+        ++currentIndex;
+    }
+    return -1;
+}
+
+int StackedWaveWidget::visualIndexForChannelLocked(int ch) const
+{
+    if (ch < 0 || ch >= m_channelHidden.size() || m_channelHidden[ch]) return -1;
+    int visualIndex = 0;
+    for (int i = 0; i < ch; ++i) {
+        if (!m_channelHidden[i]) ++visualIndex;
+    }
+    return visualIndex;
+}
+
+int StackedWaveWidget::firstVisibleChannelLocked() const
+{
+    for (int ch = 0; ch < m_channelHidden.size(); ++ch) {
+        if (!m_channelHidden[ch]) return ch;
+    }
+    return -1;
+}
+
+int StackedWaveWidget::currentChannelLocked() const
+{
+    const int preferred = (m_mode == ViewMode::Single && m_focusCh >= 0) ? m_focusCh : m_selectedCh;
+    if (preferred >= 0 && preferred < m_channelHidden.size() && !m_channelHidden[preferred]) {
+        return preferred;
+    }
+    return firstVisibleChannelLocked();
+}
+
+void StackedWaveWidget::ensureSelectionVisibleLocked()
+{
+    const int fallback = firstVisibleChannelLocked();
+    if (fallback < 0) {
+        m_selectedCh = 0;
+        m_focusCh = -1;
+        resetView();
+        return;
+    }
+
+    if (m_selectedCh < 0 || m_selectedCh >= m_channelHidden.size() || m_channelHidden[m_selectedCh]) {
+        m_selectedCh = fallback;
+    }
+    if (m_focusCh >= 0 && (m_focusCh >= m_channelHidden.size() || m_channelHidden[m_focusCh])) {
+        m_focusCh = m_selectedCh;
+    }
+}
+
 int StackedWaveWidget::pickChannelAtPos(const QPoint &pos, const QRect &contentRect) const
 {
     if (m_mode == ViewMode::Single) {
-        return qBound(0, (m_focusCh >= 0 ? m_focusCh : m_selectedCh), m_channels - 1);
+        return qMax(0, currentChannelLocked());
     }
 
     for (int ch = 0; ch < m_channels; ++ch) {
@@ -281,12 +377,14 @@ void StackedWaveWidget::drawHeader(QPainter &p, const QRect &rect) const
             : QStringLiteral("overview x%1").arg(m_overviewGainScale, 0, 'f', 2))
         : QStringLiteral("±%1 µV").arg(m_gainUv, 0, 'f', 0);
 
-    const QString meta = QStringLiteral("%1   |   CH%2   |   %3 s   |   %4   |   lane %5 px   |   %6")
+    const int hiddenCount = qMax(0, m_channels - visibleChannelCountLocked());
+    const QString meta = QStringLiteral("%1   |   CH%2   |   %3 s   |   %4   |   lane %5 px   |   hidden %6   |   %7")
                              .arg(modeText)
                              .arg(m_selectedCh + 1, 2, 10, QChar('0'))
                              .arg(m_windowSec, 0, 'f', 2)
                              .arg(rangeText)
                              .arg(m_overviewLaneHeight)
+                             .arg(hiddenCount)
                              .arg(filterText);
 
     p.setPen(QColor(139, 169, 181));
@@ -476,7 +574,7 @@ void StackedWaveWidget::drawOverview(QPainter &p, const QRect &contentRect, cons
 
 void StackedWaveWidget::drawSingle(QPainter &p, const QRect &contentRect, const ViewRange &range) const
 {
-    const int ch = qBound(0, (m_focusCh >= 0 ? m_focusCh : m_selectedCh), m_channels - 1);
+    const int ch = qMax(0, currentChannelLocked());
     const QRect cardRect = contentRect;
     const QRect infoRect = cardRect.adjusted(16, 12, -16, -cardRect.height() + 40);
     const QRect plotRect = cardRect.adjusted(16, 50, -16, -34);
@@ -552,7 +650,7 @@ void StackedWaveWidget::autoScaleSelectedLocked(const ViewRange &range)
 {
     if (!range.valid || m_rings.isEmpty()) return;
 
-    const int ch = qBound(0, (m_focusCh >= 0 ? m_focusCh : m_selectedCh), m_channels - 1);
+    const int ch = qMax(0, currentChannelLocked());
     float peakAbs = 0.0f;
     for (int i = range.start; i <= range.end; ++i) {
         peakAbs = qMax(peakAbs, std::abs(m_rings[ch].atFromOldest(i)));
@@ -771,6 +869,8 @@ void StackedWaveWidget::wheelEvent(QWheelEvent *e)
 void StackedWaveWidget::contextMenuEvent(QContextMenuEvent *e)
 {
     int changedCh = -1;
+    bool canHideCurrent = false;
+    bool canShowAll = false;
     {
         QMutexLocker lk(&m_mtx);
         updateOverviewScrollBarLocked();
@@ -780,11 +880,18 @@ void StackedWaveWidget::contextMenuEvent(QContextMenuEvent *e)
             m_selectedCh = ch;
             changedCh = ch;
         }
+        ensureSelectionVisibleLocked();
+        canHideCurrent = visibleChannelCountLocked() > 1;
+        canShowAll = m_channelHidden.contains(true);
     }
     if (changedCh >= 0) emit selectedChannelChanged(changedCh);
 
     QMenu menu(this);
     QAction *focusAction = menu.addAction(m_mode == ViewMode::Overview ? tr("聚焦选中通道") : tr("返回总览"));
+    QAction *hideAction = menu.addAction(tr("隐藏当前通道"));
+    hideAction->setEnabled(canHideCurrent);
+    QAction *showAllAction = menu.addAction(tr("显示全部通道"));
+    showAllAction->setEnabled(canShowAll);
     QAction *autoGainAction = menu.addAction(tr("自动匹配当前通道幅度"));
     QAction *resetOverviewGainAction = nullptr;
     QAction *growLaneAction = nullptr;
@@ -804,46 +911,79 @@ void StackedWaveWidget::contextMenuEvent(QContextMenuEvent *e)
     if (!selected) return;
 
     bool laneChanged = false;
+    bool needUpdate = false;
     int laneHeight = m_overviewLaneHeight;
+    int emittedChannel = -1;
     {
         QMutexLocker lk(&m_mtx);
         if (selected == focusAction) {
             if (m_mode == ViewMode::Overview) {
+                ensureSelectionVisibleLocked();
                 m_mode = ViewMode::Single;
                 m_focusCh = m_selectedCh;
                 m_panSamples = 0;
                 updateOverviewScrollBarLocked();
             } else {
                 resetView();
+                ensureSelectionVisibleLocked();
                 updateOverviewScrollBarLocked();
             }
+            needUpdate = true;
+        } else if (selected == hideAction) {
+            const int currentCh = currentChannelLocked();
+            if (currentCh >= 0 && visibleChannelCountLocked() > 1) {
+                m_channelHidden[currentCh] = true;
+                const int previousCh = m_selectedCh;
+                ensureSelectionVisibleLocked();
+                if (m_mode == ViewMode::Single) {
+                    m_focusCh = m_selectedCh;
+                }
+                updateOverviewScrollBarLocked();
+                needUpdate = true;
+                if (m_selectedCh != previousCh) emittedChannel = m_selectedCh;
+            }
+        } else if (selected == showAllAction) {
+            const int previousCh = m_selectedCh;
+            m_channelHidden.fill(false, m_channels);
+            ensureSelectionVisibleLocked();
+            updateOverviewScrollBarLocked();
+            needUpdate = true;
+            if (m_selectedCh != previousCh) emittedChannel = m_selectedCh;
         } else if (selected == autoGainAction) {
             autoScaleSelectedLocked(currentViewRangeLocked());
+            needUpdate = true;
         } else if (selected == resetOverviewGainAction) {
             m_overviewGainScale = 1.0;
+            needUpdate = true;
         } else if (selected == growLaneAction) {
             m_overviewLaneHeight = qBound(m_overviewLaneHeightMin, m_overviewLaneHeight + 10, m_overviewLaneHeightMax);
             laneHeight = m_overviewLaneHeight;
             laneChanged = true;
             updateOverviewScrollBarLocked();
+            needUpdate = true;
         } else if (selected == shrinkLaneAction) {
             m_overviewLaneHeight = qBound(m_overviewLaneHeightMin, m_overviewLaneHeight - 10, m_overviewLaneHeightMax);
             laneHeight = m_overviewLaneHeight;
             laneChanged = true;
             updateOverviewScrollBarLocked();
+            needUpdate = true;
         } else if (selected == resetLaneAction) {
             m_overviewLaneHeight = 58;
             laneHeight = m_overviewLaneHeight;
             laneChanged = true;
             updateOverviewScrollBarLocked();
+            needUpdate = true;
         } else if (selected == resetAction) {
             resetView();
+            ensureSelectionVisibleLocked();
             updateOverviewScrollBarLocked();
+            needUpdate = true;
         }
     }
 
+    if (emittedChannel >= 0) emit selectedChannelChanged(emittedChannel);
     if (laneChanged) emit overviewLaneHeightChanged(laneHeight);
-    update();
+    if (needUpdate || laneChanged) update();
 }
 
 void StackedWaveWidget::setFilterSettings(const FilterSettings &s)

@@ -264,6 +264,8 @@ void MainWindow::setupUi()
         m_btnStop            = new QPushButton(tr("停止采集"), this);
         m_btnRecStart        = new QPushButton(tr("开始录制(bin)"), this);
         m_btnRecStop         = new QPushButton(tr("停止录制"), this);
+        m_btnShowAllChannels = new QPushButton(tr("显示全部通道"), this);
+        m_btnShowAllChannels->setToolTip(tr("恢复 A/B 两边所有被隐藏的通道。"));
 
         row->addWidget(m_btnOpen);
         row->addWidget(m_btnStart);
@@ -271,6 +273,7 @@ void MainWindow::setupUi()
         row->addWidget(m_btnStop);
         row->addWidget(m_btnRecStart);
         row->addWidget(m_btnRecStop);
+        row->addWidget(m_btnShowAllChannels);
 
         row->addStretch(1);
         m_layout->addLayout(row);
@@ -435,6 +438,17 @@ void MainWindow::setupUi()
     connect(m_btnStop,     &QPushButton::clicked, this, &MainWindow::onStop);
     connect(m_btnRecStart, &QPushButton::clicked, this, &MainWindow::onRecStart);
     connect(m_btnRecStop,  &QPushButton::clicked, this, &MainWindow::onRecStop);
+    connect(m_btnShowAllChannels, &QPushButton::clicked, this, [this]() {
+        const bool hadHiddenA = m_viewA && m_viewA->hasHiddenChannels();
+        const bool hadHiddenB = m_viewB && m_viewB->hasHiddenChannels();
+        if (m_viewA) m_viewA->showAllChannels();
+        if (m_viewB) m_viewB->showAllChannels();
+        if (hadHiddenA || hadHiddenB) {
+            appendLog(QStringLiteral("已恢复所有隐藏通道"));
+        } else {
+            appendLog(QStringLiteral("当前没有被隐藏的通道"));
+        }
+    });
 
     connect(m_spinGainA, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, &MainWindow::onGainAChanged);
