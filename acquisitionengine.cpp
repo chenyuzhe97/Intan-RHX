@@ -10,6 +10,25 @@ AcquisitionEngine::AcquisitionEngine(QObject *parent)
             this, &AcquisitionEngine::onUsbTimer);
 }
 
+bool AcquisitionEngine::waitForStop(int timeoutMs)
+{
+    if (!m_rhxController) return true;
+
+    QElapsedTimer timer;
+    timer.start();
+
+    while (m_rhxController->isRunning()) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+        QThread::msleep(2);
+
+        if (timer.elapsed() >= timeoutMs) {
+            return !m_rhxController->isRunning();
+        }
+    }
+
+    return true;
+}
+
 void AcquisitionEngine::resetTimestampDiagnostics()
 {
     m_tsDiagStream0 = TimestampDiagState();
@@ -188,6 +207,9 @@ void AcquisitionEngine::stopRecordingWorker()
 }
 void AcquisitionEngine::cleanup()
 {
+    m_usbTimer.stop();
+    m_continuousRunning = false;
+    m_isRecording = false;
     stopRecordingWorker();
     if (m_recordStream.is_open()) {
         m_recordStream.close();
@@ -300,18 +322,18 @@ void AcquisitionEngine::startContinuousAcquisition()
 
 void AcquisitionEngine::stopAcquisition()
 {
-    if (!m_deviceOpened) return;
-
-    // 停止 USB 定时器
     m_usbTimer.stop();
     m_continuousRunning = false;
 
-    // 停止 SPI 连续采集
+    if (!m_deviceOpened || !m_rhxController) return;
+
+    bool forcedReset = false;
+
     if (m_rhxController->isRunning()) {
         m_rhxController->setContinuousRunMode(false);
-        // 等一次 run 自己收尾结束
-        while (m_rhxController->isRunning()) {
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+        if (!waitForStop(1500)) {
+            forcedReset = true;
+            emit logMessage(QStringLiteral("采集停止超时，正在强制复位硬件"));
         }
     }
 
@@ -319,11 +341,32 @@ void AcquisitionEngine::stopAcquisition()
     m_rhxController->setMaxTimeStep(0);
     m_rhxController->resetSequencers();
 
-    // 清 FIFO
-    m_rhxController->flush();
-    m_continuousRunning = false;   // ⭐ 关键
+    if (forcedReset) {
+        m_rhxController->resetBoard();
+        m_rhxController->resetFpga();
+        emit logMessage(QStringLiteral("采集已强制停止并复位硬件"));
+    } else {
+        m_rhxController->flush();
+        emit logMessage(QStringLiteral("采集已停止"));
+    }
+}
 
-    emit logMessage("采集已停止");
+void AcquisitionEngine::shutdownDevice()
+{
+    m_usbTimer.stop();
+    stopBinaryRecording();
+
+    if (m_rhxController && m_deviceOpened) {
+        stopAcquisition();
+        m_rhxController->setStimCmdMode(false);
+        m_rhxController->setContinuousRunMode(false);
+        m_rhxController->setMaxTimeStep(0);
+        m_rhxController->resetSequencers();
+        m_rhxController->resetBoard();
+        m_rhxController->resetFpga();
+    }
+
+    cleanup();
 }
 
 void AcquisitionEngine::onUsbTimer()

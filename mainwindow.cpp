@@ -13,6 +13,7 @@
 #include <QRegularExpression>
 #include <QTextDocument>
 #include <QSignalBlocker>
+#include <QCloseEvent>
 
 static StackedWaveWidget::FilterSettings buildFilterSettingsFromUi(
     QCheckBox *chkFilter, QComboBox *cmbType,
@@ -109,8 +110,8 @@ MainWindow::MainWindow(QWidget *parent)
     }
 
     // ===== FFT windows =====
-    m_fftA = new FftWindow(m_viewA);
-    m_fftB = new FftWindow(m_viewB);
+    m_fftA = new FftWindow(m_viewA, this);
+    m_fftB = new FftWindow(m_viewB, this);
     m_fftA->setFftSize(2048);
     m_fftB->setFftSize(2048);
         m_fftA->setMaxFreq(5000);
@@ -126,7 +127,7 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
     if (m_experiment) m_experiment->stop();
-    if (m_engine)     m_engine->stopAcquisition();
+    if (m_engine)     m_engine->shutdownDevice();
 
     if (m_stimLog) m_stimLog->stop();
 
@@ -134,6 +135,37 @@ MainWindow::~MainWindow()
     if (m_fftB) m_fftB->close();
     if (m_dockTimeline) m_dockTimeline->close();
     else if (m_timeline) m_timeline->close();
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (m_experiment) m_experiment->stop();
+    m_closedLoopExperimentActive = false;
+
+    if (m_stimLog) m_stimLog->stop();
+
+    if (m_fftA) {
+        m_fftA->hide();
+        m_fftA->close();
+    }
+    if (m_fftB) {
+        m_fftB->hide();
+        m_fftB->close();
+    }
+    if (m_dockTimeline) {
+        m_dockTimeline->hide();
+    } else if (m_timeline) {
+        m_timeline->hide();
+    }
+
+    if (m_engine) {
+        m_engine->shutdownDevice();
+    }
+
+    QMainWindow::closeEvent(event);
+    if (event->isAccepted()) {
+        QCoreApplication::quit();
+    }
 }
 
 void MainWindow::setupUi()

@@ -31,9 +31,7 @@ public:
     ~AcquisitionEngine()
     {
         // 先把录制关掉，再停采集，最后清理资源
-        stopBinaryRecording();
-        stopAcquisition();
-        cleanup();
+        shutdownDevice();
     }
 
     // 打开并初始化硬件（等价于你 main 里面前半部分）
@@ -45,6 +43,7 @@ public:
     // 开始/停止连续采集（SPI 连续跑，USB 定时读取）
     void startContinuousAcquisition();
     void stopAcquisition();
+    void shutdownDevice();
     bool isContinuousRunning() const { return m_continuousRunning; }
 
     // 简单的刺激配置接口：把电极参数交给底层 Controller
@@ -104,6 +103,7 @@ private:
 
     void cleanup();
     void processDataQueue();
+    bool waitForStop(int timeoutMs);
     void resetTimestampDiagnostics();
     void inspectTimestampBatch(const char *streamTag,
                                const QVector<uint32_t> &timeStamps,

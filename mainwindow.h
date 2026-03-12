@@ -26,6 +26,8 @@
 #include "stimlogwriter.h"
 #include "fft_window.h"
 
+class QCloseEvent;
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -61,6 +63,9 @@ private slots:
 
     void handleError(const QString &msg);
     void handleLog(const QString &msg);
+
+protected:
+    void closeEvent(QCloseEvent *event) override;
 
 private:
     void setupUi();
