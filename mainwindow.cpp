@@ -306,7 +306,7 @@ void MainWindow::setupUi()
         m_spinOverviewLane->setSingleStep(8);
         m_spinOverviewLane->setValue(58);
         m_spinOverviewLane->setSuffix(" px");
-        m_spinOverviewLane->setToolTip(tr("调大后右侧滚动条会出现；Shift+滚轮也可以直接调总览框高。"));
+        m_spinOverviewLane->setToolTip(tr("普通滚轮调上下坐标宽度，Shift+滚轮调总览框高，Alt+滚轮滚动总览。"));
         row->addWidget(m_spinOverviewLane);
 
         row->addStretch(1);
@@ -399,8 +399,8 @@ void MainWindow::setupUi()
     m_viewA->configure(m_channelsPerStream, m_sampleRate, m_visibleWindowSec, m_maxWindowSec);
     m_viewB->configure(m_channelsPerStream, m_sampleRate, m_visibleWindowSec, m_maxWindowSec);
 
-    m_viewA->setTitle("Stream A stacked view  |  click select / dblclick focus / wheel gain / Ctrl+wheel window");
-    m_viewB->setTitle("Stream B stacked view  |  click select / dblclick focus / wheel gain / Ctrl+wheel window");
+    m_viewA->setTitle("Stream A stacked view  |  wheel y-range / Alt+wheel scroll / Shift+wheel lane / Ctrl+wheel window");
+    m_viewB->setTitle("Stream B stacked view  |  wheel y-range / Alt+wheel scroll / Shift+wheel lane / Ctrl+wheel window");
 
     m_viewA->setGainUv(m_spinGainA->value());
     m_viewB->setGainUv(m_spinGainB->value());

@@ -227,7 +227,7 @@ void StackedWaveWidget::drawHeader(QPainter &p, const QRect &rect) const
 
     p.setFont(QFont(titleFont.family(), titleFont.pointSize() - 1, QFont::Medium));
     const QString modeText = (m_mode == ViewMode::Overview)
-        ? QStringLiteral("Stacked lanes (scrollable)")
+        ? QStringLiteral("Stacked lanes (wheel y-range / Alt-wheel scroll)")
         : QStringLiteral("Focus CH%1").arg(m_focusCh + 1, 2, 10, QChar('0'));
 
     QString filterText = QStringLiteral("RAW");
@@ -359,7 +359,8 @@ void StackedWaveWidget::drawOverview(QPainter &p, const QRect &contentRect, cons
                    QStringLiteral("CH %1").arg(ch + 1, 2, 10, QChar('0')));
 
         const ChannelStats stats = computeStatsLocked(m_rings[ch], range);
-        double overviewGainUv = 120.0;
+        const double overviewScale = qBound(0.25, m_gainUv / 500.0, 12.0);
+        double overviewGainUv = qBound(18.0, 120.0 * overviewScale, 5000.0);
         if (range.valid) {
             QVector<float> absSamples;
             const int step = qMax(1, (range.end - range.start + 1) / 180);
@@ -374,7 +375,7 @@ void StackedWaveWidget::drawOverview(QPainter &p, const QRect &contentRect, cons
                 const double p80Abs = *p80It;
                 const double rmsDriven = stats.valid ? stats.rmsUv * 4.2 : p80Abs * 1.6;
                 const double robustDriven = qMax(rmsDriven, p80Abs * 1.8);
-                overviewGainUv = qBound(18.0, robustDriven, 220.0);
+                overviewGainUv = qBound(18.0, robustDriven * overviewScale, 5000.0);
             }
         }
 
@@ -680,6 +681,7 @@ void StackedWaveWidget::wheelEvent(QWheelEvent *e)
 
         const bool ctrl = (e->modifiers() & Qt::ControlModifier);
         const bool shift = (e->modifiers() & Qt::ShiftModifier);
+        const bool alt = (e->modifiers() & Qt::AltModifier);
         const int steps = (e->angleDelta().y() / 120);
         if (steps == 0) return;
 
@@ -689,7 +691,7 @@ void StackedWaveWidget::wheelEvent(QWheelEvent *e)
             val = qBound(vmin, val, vmax);
         };
 
-        if (m_mode == ViewMode::Overview && !ctrl && !shift) {
+        if (m_mode == ViewMode::Overview && alt) {
             if (m_overviewScrollBar && m_overviewScrollBar->isVisible()) {
                 m_overviewScrollBar->setValue(m_overviewScrollBar->value() - steps * m_overviewScrollBar->singleStep());
             }
