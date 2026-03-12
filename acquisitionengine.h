@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QObject>
 #include <QTimer>
 #include <QVector>
@@ -87,8 +88,24 @@ private slots:
     void onUsbTimer();
 
 private:
+    struct TimestampDiagState {
+        bool hasLastTimestamp = false;
+        uint32_t lastTimestamp = 0;
+        qint64 totalBatches = 0;
+        qint64 totalSamples = 0;
+        qint64 duplicateEvents = 0;
+        qint64 backwardEvents = 0;
+        qint64 gapSamples = 0;
+        qint64 lastReportMs = -1;
+    };
+
     void cleanup();
     void processDataQueue();
+    void resetTimestampDiagnostics();
+    void inspectTimestampBatch(const char *streamTag,
+                               const QVector<uint32_t> &timeStamps,
+                               TimestampDiagState &state,
+                               unsigned int fifoWords);
     void pauseContinuousForStim();      // 只暂停连续采集（给刺激用）
     void resumeContinuousAfterStim();   // 刺激后恢复连续采集
 
@@ -110,6 +127,9 @@ private:
     bool m_continuousRunning = false;   // 当前是否处于连续采集模式
     bool m_deviceOpened      = false;
     int  m_numEnabledStreams = 0;
-    int  m_channelsPerStream = 16;      // 对 RHS，官方文档就是 16
+    int  m_channelsPerStream = 16;
+    TimestampDiagState m_tsDiagStream0;
+    TimestampDiagState m_tsDiagStream1;
+    QElapsedTimer      m_tsDiagClock;
 };
 

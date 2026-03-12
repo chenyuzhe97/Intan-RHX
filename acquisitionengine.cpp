@@ -9,6 +9,125 @@ AcquisitionEngine::AcquisitionEngine(QObject *parent)
             this, &AcquisitionEngine::onUsbTimer);
 }
 
+void AcquisitionEngine::resetTimestampDiagnostics()
+{
+    m_tsDiagStream0 = TimestampDiagState();
+    m_tsDiagStream1 = TimestampDiagState();
+
+    if (m_tsDiagClock.isValid()) {
+        m_tsDiagClock.restart();
+    } else {
+        m_tsDiagClock.start();
+    }
+}
+
+void AcquisitionEngine::inspectTimestampBatch(const char *streamTag,
+                                             const QVector<uint32_t> &timeStamps,
+                                             TimestampDiagState &state,
+                                             unsigned int fifoWords)
+{
+    if (timeStamps.isEmpty()) return;
+    if (!m_tsDiagClock.isValid()) {
+        m_tsDiagClock.start();
+    }
+
+    ++state.totalBatches;
+    state.totalSamples += timeStamps.size();
+
+    qint64 batchDuplicates = 0;
+    qint64 batchBackwards = 0;
+    qint64 batchGapSamples = 0;
+    bool anomaly = false;
+    QString anomalyText;
+
+    const uint32_t first = timeStamps.front();
+    const uint32_t last = timeStamps.back();
+
+    auto appendIssue = [&](const QString &issue) {
+        if (!anomalyText.isEmpty()) {
+            anomalyText += QStringLiteral(" | ");
+        }
+        anomalyText += issue;
+    };
+
+    if (state.hasLastTimestamp) {
+        const uint32_t expectedFirst = state.lastTimestamp + 1u;
+        if (first != expectedFirst) {
+            anomaly = true;
+            if (first > expectedFirst) {
+                const qint64 gap = qint64(first) - qint64(expectedFirst);
+                batchGapSamples += gap;
+                state.gapSamples += gap;
+                appendIssue(QStringLiteral("prev-gap=%1").arg(gap));
+            } else if (first == state.lastTimestamp) {
+                ++batchDuplicates;
+                ++state.duplicateEvents;
+                appendIssue(QStringLiteral("prev-dup=1"));
+            } else {
+                ++batchBackwards;
+                ++state.backwardEvents;
+                appendIssue(QStringLiteral("prev-back expected=%1 got=%2")
+                                .arg(expectedFirst)
+                                .arg(first));
+            }
+        }
+    }
+
+    for (int i = 1; i < timeStamps.size(); ++i) {
+        const uint32_t prev = timeStamps[i - 1];
+        const uint32_t curr = timeStamps[i];
+        if (curr == prev) {
+            anomaly = true;
+            ++batchDuplicates;
+            ++state.duplicateEvents;
+            continue;
+        }
+        if (curr > prev + 1u) {
+            anomaly = true;
+            const qint64 gap = qint64(curr) - qint64(prev) - 1;
+            batchGapSamples += gap;
+            state.gapSamples += gap;
+            continue;
+        }
+        if (curr < prev) {
+            anomaly = true;
+            ++batchBackwards;
+            ++state.backwardEvents;
+        }
+    }
+
+    state.lastTimestamp = last;
+    state.hasLastTimestamp = true;
+
+    const qint64 nowMs = m_tsDiagClock.elapsed();
+    const bool shouldReport = anomaly || state.lastReportMs < 0 || (nowMs - state.lastReportMs >= 1000);
+    if (!shouldReport) {
+        return;
+    }
+    state.lastReportMs = nowMs;
+
+    QString message = QStringLiteral("[TS] %1 batches=%2 samples=%3 range=%4..%5 next=%6 fifoWords=%7 dup=%8 gap=%9 back=%10")
+                          .arg(QString::fromLatin1(streamTag))
+                          .arg(state.totalBatches)
+                          .arg(state.totalSamples)
+                          .arg(first)
+                          .arg(last)
+                          .arg(last + 1u)
+                          .arg(fifoWords)
+                          .arg(state.duplicateEvents)
+                          .arg(state.gapSamples)
+                          .arg(state.backwardEvents);
+
+    if (anomaly) {
+        message += QStringLiteral(" batchDup=%1 batchGap=%2 batchBack=%3 anomaly=%4")
+                       .arg(batchDuplicates)
+                       .arg(batchGapSamples)
+                       .arg(batchBackwards)
+                       .arg(anomalyText.isEmpty() ? QStringLiteral("internal") : anomalyText);
+    }
+
+    emit logMessage(message);
+}
 void AcquisitionEngine::cleanup()
 {
     // 清空队列里的 RHXDataBlock
@@ -30,6 +149,7 @@ void AcquisitionEngine::cleanup()
     }
 
     m_deviceOpened = false;
+    resetTimestampDiagnostics();
 }
 
 bool AcquisitionEngine::openDevice(const QString &bitfilePath)
@@ -77,6 +197,7 @@ bool AcquisitionEngine::openDevice(const QString &bitfilePath)
         RHXDataBlock::channelsPerStream(m_rhxController->getType());
 
     m_deviceOpened = true;
+    resetTimestampDiagnostics();
     emit logMessage("设备打开并初始化成功");
     return true;
 }
@@ -98,6 +219,7 @@ void AcquisitionEngine::startContinuousAcquisition()
     }
 
     // 采集模式：连续 + 刺激命令模式
+    resetTimestampDiagnostics();
     m_rhxController->setContinuousRunMode(true);
     m_rhxController->setStimCmdMode(true);
 
@@ -216,6 +338,12 @@ void AcquisitionEngine::processDataQueue()
         }
 
         delete block;
+    }
+
+    const unsigned int fifoWords = m_rhxController ? m_rhxController->getNumWordsInFifo() : 0;
+    inspectTimestampBatch("S0", ts0, m_tsDiagStream0, fifoWords);
+    if (streamIdx1 >= 0) {
+        inspectTimestampBatch("S1", ts1, m_tsDiagStream1, fifoWords);
     }
 
     emit newSamples(ts0, ch0);
