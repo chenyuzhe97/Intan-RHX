@@ -13,6 +13,36 @@
 #include <algorithm>
 #include <cmath>
 
+static QFont fontWithRelativeSize(const QFont &base, int delta, int minSize = 1)
+{
+    QFont f(base);
+    const int pixelSize = f.pixelSize();
+    if (pixelSize > 0) {
+        f.setPixelSize(qMax(minSize, pixelSize + delta));
+    } else {
+        const int pointSize = f.pointSize();
+        const int safePointSize = (pointSize > 0) ? pointSize : 9;
+        f.setPointSize(qMax(minSize, safePointSize + delta));
+    }
+    return f;
+}
+
+static QFont fontWithAbsoluteSize(const QFont &base, int size, int weight = -1)
+{
+    QFont f(base);
+    if (weight >= 0) {
+        f.setWeight(static_cast<QFont::Weight>(weight));
+    }
+
+    const int clampedSize = qMax(1, size);
+    if (f.pixelSize() > 0) {
+        f.setPixelSize(clampedSize);
+    } else {
+        f.setPointSize(clampedSize);
+    }
+    return f;
+}
+
 StackedWaveWidget::StackedWaveWidget(QWidget *parent) : QWidget(parent)
 {
     setMinimumSize(560, 420);
@@ -218,14 +248,15 @@ void StackedWaveWidget::drawHeader(QPainter &p, const QRect &rect) const
     p.setBrush(QColor(11, 19, 27, 220));
     p.drawRoundedRect(headerRect, 12, 12);
 
-    QFont titleFont = p.font();
+    QFont titleFont = fontWithRelativeSize(p.font(), 1, 9);
     titleFont.setBold(true);
-    titleFont.setPointSize(titleFont.pointSize() + 1);
     p.setFont(titleFont);
     p.setPen(QColor(231, 238, 243));
     p.drawText(headerRect.adjusted(14, 0, -180, 0), Qt::AlignVCenter | Qt::AlignLeft, m_title);
 
-    p.setFont(QFont(titleFont.family(), titleFont.pointSize() - 1, QFont::Medium));
+    QFont metaFont = fontWithRelativeSize(titleFont, -1, 8);
+    metaFont.setWeight(QFont::Medium);
+    p.setFont(metaFont);
     const QString modeText = (m_mode == ViewMode::Overview)
         ? QStringLiteral("Stacked lanes (wheel y-range / Alt-wheel scroll)")
         : QStringLiteral("Focus CH%1").arg(m_focusCh + 1, 2, 10, QChar('0'));
@@ -356,9 +387,8 @@ void StackedWaveWidget::drawOverview(QPainter &p, const QRect &contentRect, cons
         p.setBrush(tagFill);
         p.drawRoundedRect(tagRect, 8, 8);
 
-        QFont labelFont = p.font();
+        QFont labelFont = fontWithRelativeSize(p.font(), compact ? -1 : 0, 8);
         labelFont.setBold(true);
-        labelFont.setPointSize(qMax(8, labelFont.pointSize() - (compact ? 1 : 0)));
         p.setFont(labelFont);
         p.setPen(QColor(221, 233, 239));
         p.drawText(tagRect.adjusted(8, compact ? 2 : 4, -6, 0), Qt::AlignLeft | Qt::AlignTop,
@@ -388,7 +418,7 @@ void StackedWaveWidget::drawOverview(QPainter &p, const QRect &contentRect, cons
                                              5000.0);
         const bool manualOverviewGain = (std::abs(m_overviewGainScale - 1.0) >= 0.001);
 
-        p.setFont(QFont(labelFont.family(), compact ? 7 : 8));
+        p.setFont(fontWithAbsoluteSize(labelFont, compact ? 7 : 8));
         p.setPen(QColor(150, 181, 194));
         const QString statText = stats.valid
             ? (compact
@@ -430,7 +460,7 @@ void StackedWaveWidget::drawOverview(QPainter &p, const QRect &contentRect, cons
         p.setClipping(false);
 
         p.setPen(QColor(128, 157, 170));
-        p.setFont(QFont(labelFont.family(), compact ? 7 : 8));
+        p.setFont(fontWithAbsoluteSize(labelFont, compact ? 7 : 8));
         const QString footer = compact
             ? QStringLiteral("%1+/-%2")
                   .arg(manualOverviewGain ? QStringLiteral("m ") : QStringLiteral("a "))
@@ -462,16 +492,15 @@ void StackedWaveWidget::drawSingle(QPainter &p, const QRect &contentRect, const 
     p.drawRoundedRect(QRect(cardRect.left(), cardRect.top(), cardRect.width(), 44), 18, 18);
     p.drawRect(QRect(cardRect.left(), cardRect.top() + 22, cardRect.width(), 22));
 
-    QFont titleFont = p.font();
+    QFont titleFont = fontWithRelativeSize(p.font(), 1, 9);
     titleFont.setBold(true);
-    titleFont.setPointSize(titleFont.pointSize() + 1);
     p.setFont(titleFont);
     p.setPen(QColor(242, 246, 249));
     p.drawText(infoRect.adjusted(0, 0, -200, 0), Qt::AlignLeft | Qt::AlignVCenter,
                QStringLiteral("Channel %1 Focus").arg(ch + 1, 2, 10, QChar('0')));
 
     const ChannelStats stats = computeStatsLocked(m_rings[ch], range);
-    p.setFont(QFont(titleFont.family(), qMax(9, titleFont.pointSize() - 1)));
+    p.setFont(fontWithRelativeSize(titleFont, -1, 9));
     p.setPen(QColor(156, 186, 199));
     const QString statText = stats.valid
         ? QStringLiteral("RMS %1   P2P %2   Pan %3 samples")
@@ -502,7 +531,7 @@ void StackedWaveWidget::drawSingle(QPainter &p, const QRect &contentRect, const 
     p.setClipping(false);
 
     p.setPen(QColor(201, 213, 221));
-    p.setFont(QFont(titleFont.family(), qMax(9, titleFont.pointSize() - 2)));
+    p.setFont(fontWithRelativeSize(titleFont, -2, 9));
     p.drawText(plotRect.left() + 8, plotRect.top() + 18, QStringLiteral("+%1 µV").arg(m_gainUv, 0, 'f', 0));
     p.drawText(plotRect.left() + 8, plotRect.center().y() - 4, QStringLiteral("0"));
     p.drawText(plotRect.left() + 8, plotRect.bottom() - 26, QStringLiteral("-%1 µV").arg(m_gainUv, 0, 'f', 0));
