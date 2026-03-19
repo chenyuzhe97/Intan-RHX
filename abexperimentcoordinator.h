@@ -36,6 +36,7 @@ public:
     void setSampleRateHz(double sampleRateHz);
     void setEpochDurationSec(double epochDurationSec);
     void setRoutingConfig(const RoutingConfig &config);
+    void cancelPendingStimPhase();
 
     void handleEpochReady(int phaseIndex,
                           const QVector<uint32_t> &timeStamps,
@@ -43,6 +44,7 @@ public:
 
 signals:
     void logMessage(const QString &msg);
+    void stimPhaseFinished();
 
 private:
     QVector<int> meanSelectedChannels(const QVector<QVector<int>> &channelData,
@@ -58,7 +60,8 @@ private:
 
     RoutingConfig m_config;
 
-    int    m_epochCounter = 0;
-    double m_sampleRateHz = 30000.0;
-    double m_epochDurationSec = 5.0;
+    int     m_epochCounter = 0;
+    double  m_sampleRateHz = 30000.0;
+    double  m_epochDurationSec = 5.0;
+    quint64 m_scheduleToken = 0;
 };

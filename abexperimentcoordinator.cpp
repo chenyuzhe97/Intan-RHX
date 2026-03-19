@@ -55,6 +55,11 @@ void ABExperimentCoordinator::setRoutingConfig(const RoutingConfig &config)
     m_config = config;
 }
 
+void ABExperimentCoordinator::cancelPendingStimPhase()
+{
+    ++m_scheduleToken;
+}
+
 QVector<int> ABExperimentCoordinator::meanSelectedChannels(const QVector<QVector<int>> &channelData,
                                                            const QVector<int> &sel) const
 {
@@ -74,7 +79,7 @@ QVector<int> ABExperimentCoordinator::meanSelectedChannels(const QVector<QVector
             const auto &v = channelData[ch];
             if (i < 0 || i >= v.size()) continue;
             sum += static_cast<long long>(v[i]);
-            used++;
+            ++used;
         }
         if (used == 0) return {};
         out[i] = static_cast<int>(std::llround(static_cast<double>(sum) / static_cast<double>(used)));
@@ -86,8 +91,8 @@ QVector<int> ABExperimentCoordinator::meanSelectedChannels(const QVector<QVector
 QString ABExperimentCoordinator::phaseNameForIndex(int phaseIndex) const
 {
     return (phaseIndex == 0)
-        ? QStringLiteral("PhaseA (A端 stream0)")
-        : QStringLiteral("PhaseB (B端 stream2)");
+        ? QStringLiteral("PhaseA (Aç»”?stream0)")
+        : QStringLiteral("PhaseB (Bç»”?stream2)");
 }
 
 QString ABExperimentCoordinator::electrodeForAvgIndex(int phaseIndex, int avgIndex) const
@@ -103,9 +108,26 @@ void ABExperimentCoordinator::handleEpochReady(int phaseIndex,
                                                const QVector<uint32_t> &timeStamps,
                                                const QVector<QVector<int>> &channelData)
 {
+    const quint64 scheduleToken = ++m_scheduleToken;
+    auto finishPhase = [this, scheduleToken](int delayMs) {
+        QTimer::singleShot(qMax(0, delayMs), this, [this, scheduleToken]() {
+            if (scheduleToken != m_scheduleToken) return;
+            emit stimPhaseFinished();
+        });
+    };
+
     const QString phaseName = phaseNameForIndex(phaseIndex);
-    if (!m_algorithm || !m_engine) return;
-    if (timeStamps.isEmpty() || channelData.isEmpty()) return;
+    if (!m_algorithm || !m_engine) {
+        emit logMessage(phaseName + QStringLiteral(": coordinator not ready, skip stimulation."));
+        finishPhase(0);
+        return;
+    }
+
+    if (timeStamps.isEmpty() || channelData.isEmpty()) {
+        emit logMessage(phaseName + QStringLiteral(": empty epoch, skip stimulation."));
+        finishPhase(0);
+        return;
+    }
 
     const QVector<int> &sel_a = (phaseIndex == 0) ? m_config.senseA_a : m_config.senseB_a;
     const QVector<int> &sel_b = (phaseIndex == 0) ? m_config.senseA_b : m_config.senseB_b;
@@ -113,8 +135,10 @@ void ABExperimentCoordinator::handleEpochReady(int phaseIndex,
     QVector<int> avg_a = meanSelectedChannels(channelData, sel_a);
     QVector<int> avg_b = meanSelectedChannels(channelData, sel_b);
 
-    if (avg_a.isEmpty() || avg_b.isEmpty() || avg_a.size() != timeStamps.size() || avg_b.size() != timeStamps.size()) {
-        emit logMessage(phaseName + QStringLiteral(": 平均信号生成失败（通道列表/数据长度不匹配）"));
+    if (avg_a.isEmpty() || avg_b.isEmpty() ||
+        avg_a.size() != timeStamps.size() || avg_b.size() != timeStamps.size()) {
+        emit logMessage(phaseName + QStringLiteral(": averaged channels are invalid, skip stimulation."));
+        finishPhase(0);
         return;
     }
 
@@ -127,7 +151,8 @@ void ABExperimentCoordinator::handleEpochReady(int phaseIndex,
         m_algorithm->analyzeEpoch(phaseIndex, timeStamps, avgChannelData);
 
     if (allResults.isEmpty()) {
-        emit logMessage(phaseName + QStringLiteral(": 本 epoch 未检测到事件"));
+        emit logMessage(phaseName + QStringLiteral(": no candidate event in this epoch."));
+        finishPhase(0);
         return;
     }
 
@@ -143,7 +168,8 @@ void ABExperimentCoordinator::handleEpochReady(int phaseIndex,
         candidates.push_back(r);
     }
     if (candidates.isEmpty()) {
-        emit logMessage(phaseName + QStringLiteral(": 无需刺激"));
+        emit logMessage(phaseName + QStringLiteral(": no stimulation scheduled."));
+        finishPhase(0);
         return;
     }
 
@@ -164,11 +190,14 @@ void ABExperimentCoordinator::handleEpochReady(int phaseIndex,
     QVector<StimTimelineOverlay::Item> items;
     items.reserve(candidates.size());
 
+    int maxDelayMs = 0;
+    int maxPulses = 1;
     for (int i = 0; i < candidates.size(); ++i) {
         const auto &r = candidates[i];
 
         const QString targetElectrode = electrodeForAvgIndex(phaseIndex, r.channelIndex);
         const int pulses = (r.suggestedNumPulses > 0) ? r.suggestedNumPulses : 1;
+        maxPulses = qMax(maxPulses, pulses);
 
         double offsetSec = 0.0;
         if (r.triggerTime >= epochStartTs) {
@@ -177,6 +206,7 @@ void ABExperimentCoordinator::handleEpochReady(int phaseIndex,
         const double offsetMs = offsetSec * 1000.0;
         int delayMs = static_cast<int>(offsetMs);
         if (delayMs < 0) delayMs = 0;
+        maxDelayMs = qMax(maxDelayMs, delayMs);
 
         StimTimelineOverlay::Item it;
         it.itemIndex = i;
@@ -195,11 +225,10 @@ void ABExperimentCoordinator::handleEpochReady(int phaseIndex,
         }
 
         QTimer::singleShot(delayMs, this,
-                           [this, epochId, itemIdx = i,
-                            targetElectrode,
-                            triggerSource,
-                            amp = it.amp_uA,
-                            pulses = it.pulses]() {
+                           [this, scheduleToken, epochId, itemIdx = i,
+                            targetElectrode, triggerSource,
+                            amp = it.amp_uA, pulses = it.pulses]() {
+                               if (scheduleToken != m_scheduleToken) return;
                                if (m_timeline) m_timeline->markFired(epochId, itemIdx);
                                if (!m_engine) return;
                                m_engine->applyAdaptiveStim(targetElectrode, amp, pulses, triggerSource);
@@ -212,8 +241,12 @@ void ABExperimentCoordinator::handleEpochReady(int phaseIndex,
         m_timeline->raise();
     }
 
-    emit logMessage(QStringLiteral("%1: epochId=%2 计划刺激=%3")
+    const int finishDelayMs = maxDelayMs + qMax(10, maxPulses * 10);
+    finishPhase(finishDelayMs);
+
+    emit logMessage(QStringLiteral("%1: epochId=%2 planned stim count=%3, stim phase ends in %4 ms")
                         .arg(phaseName)
                         .arg(epochId)
-                        .arg(items.size()));
+                        .arg(items.size())
+                        .arg(finishDelayMs));
 }

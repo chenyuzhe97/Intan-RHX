@@ -60,6 +60,8 @@ private slots:
     void onABEpochReady(int phaseIndex,
                         const QVector<uint32_t> &timeStamps,
                         const QVector<QVector<int>> &channelData);
+    void onClosedLoopRoundCompleted(int completedRounds, int targetRounds);
+    void onClosedLoopExperimentCompleted(int completedRounds);
 
     void handleError(const QString &msg);
     void handleLog(const QString &msg);
@@ -108,6 +110,7 @@ private:
     QPushButton    *m_btnApplyManualStim = nullptr;
 
     QDoubleSpinBox *m_spinEpochSec = nullptr;
+    QSpinBox       *m_spinClosedLoopRounds = nullptr;
 
     // ===== view gain =====
     QDoubleSpinBox *m_spinGainA = nullptr;   // ±uV

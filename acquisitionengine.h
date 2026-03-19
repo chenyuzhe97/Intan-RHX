@@ -45,6 +45,7 @@ public:
     void stopAcquisition();
     void shutdownDevice();
     bool isContinuousRunning() const { return m_continuousRunning; }
+    bool isRecording() const { return m_isRecording; }
 
     // 简单的刺激配置接口：把电极参数交给底层 Controller
     void configureStim(const QString &electrodeName,

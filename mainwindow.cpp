@@ -85,6 +85,12 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(m_experiment, &ExperimentControllerAB::epochReady,
             this,         &MainWindow::onABEpochReady);
+    connect(m_coordinator, &ABExperimentCoordinator::stimPhaseFinished,
+            m_experiment, &ExperimentControllerAB::onStimPhaseFinished);
+    connect(m_experiment, &ExperimentControllerAB::roundCompleted,
+            this,         &MainWindow::onClosedLoopRoundCompleted);
+    connect(m_experiment, &ExperimentControllerAB::experimentCompleted,
+            this,         &MainWindow::onClosedLoopExperimentCompleted);
 
     // ===== timeline + stim csv =====
     m_timeline = new StimTimelineOverlay(this);
@@ -126,6 +132,7 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    if (m_coordinator) m_coordinator->cancelPendingStimPhase();
     if (m_experiment) m_experiment->stop();
     if (m_engine)     m_engine->shutdownDevice();
 
@@ -139,6 +146,7 @@ MainWindow::~MainWindow()
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    if (m_coordinator) m_coordinator->cancelPendingStimPhase();
     if (m_experiment) m_experiment->stop();
     m_closedLoopExperimentActive = false;
 
@@ -938,7 +946,12 @@ void MainWindow::setupElectrodeConfigDock()
     m_spinEpochSec->setSingleStep(0.5);
     m_spinEpochSec->setSuffix(" s");
     m_spinEpochSec->setValue(colletion_time);
+    m_spinClosedLoopRounds = new QSpinBox(gbExperiment);
+    m_spinClosedLoopRounds->setRange(1, 100000);
+    m_spinClosedLoopRounds->setSingleStep(1);
+    m_spinClosedLoopRounds->setValue(1);
     experimentForm->addRow(tr("AB Epoch 时长"), m_spinEpochSec);
+    experimentForm->addRow(tr("Rounds"), m_spinClosedLoopRounds);
     experimentLayout->addLayout(experimentForm);
 
     QGroupBox *gbSense = new QGroupBox(tr("闭环感受通道 (UI 用 1-based)"), panel);
@@ -1033,6 +1046,11 @@ void MainWindow::loadElectrodeConfig()
         QSignalBlocker blocker(m_spinEpochSec);
         m_spinEpochSec->setValue(colletion_time);
     }
+    if (m_spinClosedLoopRounds) {
+        const int savedRounds = qMax(1, s.value("closed_loop/rounds", m_spinClosedLoopRounds->value()).toInt());
+        QSignalBlocker blocker(m_spinClosedLoopRounds);
+        m_spinClosedLoopRounds->setValue(savedRounds);
+    }
 
     const QString tA_a = s.value("electrode/sense_A_a", m_editSense_A_a->text()).toString();
     const QString tA_b = s.value("electrode/sense_A_b", m_editSense_A_b->text()).toString();
@@ -1086,6 +1104,7 @@ void MainWindow::saveElectrodeConfig() const
 
     QSettings s;
     s.setValue("closed_loop/epoch_sec", m_spinEpochSec ? m_spinEpochSec->value() : colletion_time);
+    s.setValue("closed_loop/rounds", m_spinClosedLoopRounds ? m_spinClosedLoopRounds->value() : 1);
     s.setValue("electrode/sense_A_a", m_editSense_A_a->text().trimmed());
     s.setValue("electrode/sense_A_b", m_editSense_A_b->text().trimmed());
     s.setValue("electrode/sense_B_a", m_editSense_B_a->text().trimmed());
@@ -1219,6 +1238,7 @@ void MainWindow::onStart()
 
     const bool wasAcquiring = m_engine->isContinuousRunning();
     const bool wasClosedLoop = m_closedLoopExperimentActive;
+    if (m_coordinator) m_coordinator->cancelPendingStimPhase();
     if (m_experiment) m_experiment->stop();
     m_closedLoopExperimentActive = false;
 
@@ -1273,6 +1293,7 @@ void MainWindow::onStartClosedLoop()
     m_manualStimLoadedForCurrentRun = false;
     m_manualStimAppliedSummary.clear();
     m_manualStimAppliedSignature.clear();
+    if (m_coordinator) m_coordinator->cancelPendingStimPhase();
 
     if (m_closedLoopExperimentActive) {
         if (m_timeline) {
@@ -1286,6 +1307,7 @@ void MainWindow::onStartClosedLoop()
 
     if (m_experiment) {
         m_experiment->setEpochDuration(colletion_time);
+        m_experiment->setTargetRounds(m_spinClosedLoopRounds ? m_spinClosedLoopRounds->value() : 1);
         m_experiment->start();
     }
     m_closedLoopExperimentActive = true;
@@ -1308,6 +1330,7 @@ void MainWindow::onStop()
     const bool wasClosedLoop = m_closedLoopExperimentActive;
     const bool wasAcquiring = m_engine && m_engine->isContinuousRunning();
 
+    if (m_coordinator) m_coordinator->cancelPendingStimPhase();
     if (m_experiment) m_experiment->stop();
     m_closedLoopExperimentActive = false;
 
@@ -1430,6 +1453,25 @@ void MainWindow::onABEpochReady(int phaseIndex,
     if (!m_coordinator) return;
     m_coordinator->handleEpochReady(phaseIndex, timeStamps, channelData);
     ensureTimelineVisible();
+}
+
+void MainWindow::onClosedLoopRoundCompleted(int completedRounds, int targetRounds)
+{
+    appendLog(QStringLiteral("Closed-loop round completed: %1/%2")
+                  .arg(completedRounds)
+                  .arg(targetRounds));
+}
+
+void MainWindow::onClosedLoopExperimentCompleted(int completedRounds)
+{
+    appendLog(QStringLiteral("Closed-loop experiment completed after %1 round(s); stopping recording and acquisition.")
+                  .arg(completedRounds));
+
+    if (m_engine && m_engine->isRecording()) {
+        onRecStop();
+    }
+
+    onStop();
 }
 
 void MainWindow::handleError(const QString &msg)
