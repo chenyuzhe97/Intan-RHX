@@ -3,6 +3,11 @@
 #include <QFileDialog>
 #include <QDateTime>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QSettings>
 #include <QDockWidget>
 #include <QGroupBox>
@@ -14,6 +19,8 @@
 #include <QTextDocument>
 #include <QSignalBlocker>
 #include <QCloseEvent>
+
+#include <algorithm>
 
 static StackedWaveWidget::FilterSettings buildFilterSettingsFromUi(
     QCheckBox *chkFilter, QComboBox *cmbType,
@@ -52,6 +59,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     setupElectrodeConfigDock();
     loadElectrodeConfig();
+    loadSessionConfig();
 
     // ===== core =====
     m_engine      = new AcquisitionEngine(this);
@@ -91,6 +99,10 @@ MainWindow::MainWindow(QWidget *parent)
             this,         &MainWindow::onClosedLoopRoundCompleted);
     connect(m_experiment, &ExperimentControllerAB::experimentCompleted,
             this,         &MainWindow::onClosedLoopExperimentCompleted);
+    connect(m_coordinator, &ABExperimentCoordinator::stimPlanned,
+            this,         &MainWindow::onStimPlanned);
+    connect(m_coordinator, &ABExperimentCoordinator::stimFired,
+            this,         &MainWindow::onStimFired);
 
     // ===== timeline + stim csv =====
     m_timeline = new StimTimelineOverlay(this);
@@ -132,6 +144,9 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    stopVoidStimReplay(false);
+    if (m_coordinator) m_coordinator->endRun();
+    finalizeManagedSession();
     if (m_coordinator) m_coordinator->cancelPendingStimPhase();
     if (m_experiment) m_experiment->stop();
     if (m_engine)     m_engine->shutdownDevice();
@@ -146,6 +161,9 @@ MainWindow::~MainWindow()
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    stopVoidStimReplay(false);
+    if (m_coordinator) m_coordinator->endRun();
+    finalizeManagedSession();
     if (m_coordinator) m_coordinator->cancelPendingStimPhase();
     if (m_experiment) m_experiment->stop();
     m_closedLoopExperimentActive = false;
@@ -298,6 +316,9 @@ void MainWindow::setupUi()
     {
         QHBoxLayout *row = new QHBoxLayout();
 
+        m_btnSelectSaveDir   = new QPushButton(QString::fromUtf8(u8"选择录制位置"), this);
+        m_btnVoidStim        = new QPushButton(QString::fromUtf8(u8"虚空刺激"), this);
+
         m_btnOpen            = new QPushButton(tr("打开设备"), this);
         m_btnStart           = new QPushButton(tr("普通采集"), this);
         m_btnStartClosedLoop = new QPushButton(tr("闭环实验采集"), this);
@@ -308,8 +329,10 @@ void MainWindow::setupUi()
         m_btnShowAllChannels->setToolTip(tr("恢复 A/B 两边所有被隐藏的通道。"));
 
         row->addWidget(m_btnOpen);
+        row->addWidget(m_btnSelectSaveDir);
         row->addWidget(m_btnStart);
         row->addWidget(m_btnStartClosedLoop);
+        row->addWidget(m_btnVoidStim);
         row->addWidget(m_btnStop);
         row->addWidget(m_btnRecStart);
         row->addWidget(m_btnRecStop);
@@ -473,8 +496,10 @@ void MainWindow::setupUi()
 
     // ===== connections =====
     connect(m_btnOpen,     &QPushButton::clicked, this, &MainWindow::onOpenDevice);
+    connect(m_btnSelectSaveDir,   &QPushButton::clicked, this, &MainWindow::onSelectRecordingLocation);
     connect(m_btnStart,           &QPushButton::clicked, this, &MainWindow::onStart);
     connect(m_btnStartClosedLoop, &QPushButton::clicked, this, &MainWindow::onStartClosedLoop);
+    connect(m_btnVoidStim,        &QPushButton::clicked, this, &MainWindow::onVoidStim);
     connect(m_btnStop,     &QPushButton::clicked, this, &MainWindow::onStop);
     connect(m_btnRecStart, &QPushButton::clicked, this, &MainWindow::onRecStart);
     connect(m_btnRecStop,  &QPushButton::clicked, this, &MainWindow::onRecStop);
@@ -1116,6 +1141,198 @@ void MainWindow::saveElectrodeConfig() const
     s.setValue("electrode/stim_B_b_num", m_spinStim_B_b->value());
 }
 
+void MainWindow::loadSessionConfig()
+{
+    QSettings s;
+    m_sessionRootDir = s.value("session/root_dir", QString()).toString().trimmed();
+    if (m_btnSelectSaveDir && !m_sessionRootDir.isEmpty()) {
+        m_btnSelectSaveDir->setToolTip(m_sessionRootDir);
+    }
+}
+
+void MainWindow::saveSessionConfig() const
+{
+    QSettings s;
+    s.setValue("session/root_dir", m_sessionRootDir);
+}
+
+bool MainWindow::ensureSessionRootSelected()
+{
+    if (!m_sessionRootDir.isEmpty() && QDir(m_sessionRootDir).exists()) {
+        return true;
+    }
+
+    onSelectRecordingLocation();
+    return !m_sessionRootDir.isEmpty() && QDir(m_sessionRootDir).exists();
+}
+
+bool MainWindow::prepareManagedSession(const QString &sessionPrefix)
+{
+    resetManagedSessionState();
+
+    if (!ensureSessionRootSelected()) {
+        return false;
+    }
+
+    QDir root(m_sessionRootDir);
+    if (!root.exists() && !root.mkpath(".")) {
+        return false;
+    }
+
+    const QString dirName = QString("%1_%2")
+                                .arg(sessionPrefix)
+                                .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss_zzz"));
+    if (!root.mkpath(dirName)) {
+        return false;
+    }
+
+    m_activeSessionDir = root.filePath(dirName);
+    m_activeRecordingPath = QDir(m_activeSessionDir).filePath("recording.bar");
+    m_activeStimPlanPath = QDir(m_activeSessionDir).filePath("stim_plan.json");
+    m_managedStimEvents.clear();
+    return true;
+}
+
+bool MainWindow::startManagedRecordingInActiveSession()
+{
+    if (!m_engine || m_activeRecordingPath.isEmpty()) {
+        return false;
+    }
+
+    if (!m_engine->startBinaryRecording(m_activeRecordingPath)) {
+        return false;
+    }
+
+    if (m_stimLog) {
+        m_stimLog->start(QDir(m_activeSessionDir).filePath("stim_log.csv"));
+    }
+    return true;
+}
+
+void MainWindow::finalizeManagedSession()
+{
+    if (m_managedSessionMode == ManagedSessionMode::None || m_activeSessionDir.isEmpty()) {
+        resetManagedSessionState();
+        return;
+    }
+
+    const qint64 durationMs = m_managedSessionClockActive ? m_managedSessionClock.elapsed() : 0;
+
+    if (m_managedSessionMode == ManagedSessionMode::ClosedLoop) {
+        if (writeStimPlanJson(durationMs)) {
+            appendLog(QStringLiteral("Stim plan JSON saved: %1").arg(m_activeStimPlanPath));
+        } else {
+            appendLog(QStringLiteral("Failed to save stim plan JSON: %1").arg(m_activeStimPlanPath));
+        }
+    } else if (m_managedSessionMode == ManagedSessionMode::VoidStim && !m_selectedReplayPlanPath.isEmpty()) {
+        if (QFile::exists(m_activeStimPlanPath)) {
+            QFile::remove(m_activeStimPlanPath);
+        }
+        if (QFile::copy(m_selectedReplayPlanPath, m_activeStimPlanPath)) {
+            appendLog(QStringLiteral("Replay stim plan copied to session: %1").arg(m_activeStimPlanPath));
+        } else {
+            appendLog(QStringLiteral("Failed to copy replay stim plan into session folder."));
+        }
+    }
+
+    resetManagedSessionState();
+}
+
+void MainWindow::resetManagedSessionState()
+{
+    m_activeSessionDir.clear();
+    m_activeRecordingPath.clear();
+    m_activeStimPlanPath.clear();
+    m_selectedReplayPlanPath.clear();
+    m_managedSessionMode = ManagedSessionMode::None;
+    m_managedSessionClock.invalidate();
+    m_managedSessionClockActive = false;
+    m_managedStimEvents.clear();
+    m_closedLoopCompletedRounds = 0;
+    m_voidStimActive = false;
+}
+
+bool MainWindow::writeStimPlanJson(qint64 durationMs) const
+{
+    if (m_activeStimPlanPath.isEmpty()) {
+        return false;
+    }
+
+    QJsonArray events;
+    for (const StimEventRecord &ev : m_managedStimEvents) {
+        QJsonObject obj;
+        obj["epoch_id"] = ev.epochId;
+        obj["source_phase_index"] = ev.phaseIndex;
+        obj["source_phase"] = (ev.phaseIndex == 0) ? "A" : "B";
+        obj["item_index"] = ev.itemIndex;
+        obj["planned_time_ms"] = QString::number(ev.plannedTimeMs);
+        obj["fired_time_ms"] = QString::number(ev.firedTimeMs);
+        obj["time_ms"] = QString::number(ev.firedTimeMs >= 0 ? ev.firedTimeMs : ev.plannedTimeMs);
+        obj["target_electrode"] = ev.electrode;
+        obj["amp_uA"] = ev.amp_uA;
+        obj["pulses"] = ev.pulses;
+        obj["channel_index"] = ev.ch;
+        obj["spike_uV"] = ev.spike_uV;
+        obj["trigger_source"] = ev.triggerSource;
+        events.append(obj);
+    }
+
+    QJsonObject root;
+    root["schema_version"] = 1;
+    root["session_type"] = "closed_loop";
+    root["created_at_iso"] = QDateTime::currentDateTime().toString(Qt::ISODateWithMs);
+    root["experiment_duration_ms"] = QString::number(qMax<qint64>(0, durationMs));
+    root["epoch_sec"] = colletion_time;
+    root["rounds_target"] = m_spinClosedLoopRounds ? m_spinClosedLoopRounds->value() : 1;
+    root["rounds_completed"] = m_closedLoopCompletedRounds;
+    root["recording_file"] = QFileInfo(m_activeRecordingPath).fileName();
+    root["stim_log_file"] = QStringLiteral("stim_log.csv");
+    root["events"] = events;
+
+    QFile file(m_activeStimPlanPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        return false;
+    }
+
+    const QJsonDocument doc(root);
+    file.write(doc.toJson(QJsonDocument::Indented));
+    file.close();
+    return true;
+}
+
+bool MainWindow::loadStimPlanJson(const QString &filePath, QByteArray *jsonBytes) const
+{
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+
+    const QByteArray bytes = file.readAll();
+    file.close();
+
+    QJsonParseError err;
+    const QJsonDocument doc = QJsonDocument::fromJson(bytes, &err);
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+        return false;
+    }
+
+    if (jsonBytes) {
+        *jsonBytes = bytes;
+    }
+    return true;
+}
+
+void MainWindow::stopVoidStimReplay(bool logMessage)
+{
+    ++m_voidStimReplayToken;
+    const bool wasActive = m_voidStimActive;
+    m_voidStimActive = false;
+
+    if (wasActive && logMessage) {
+        appendLog(QStringLiteral("Virtual stimulation stopped."));
+    }
+}
+
 void MainWindow::applyElectrodeConfigFromUi()
 {
     QString err;
@@ -1209,6 +1426,26 @@ void MainWindow::onToggleFftWindows()
     }
 }
 
+void MainWindow::onSelectRecordingLocation()
+{
+    const QString startDir = !m_sessionRootDir.isEmpty() ? m_sessionRootDir : QDir::currentPath();
+    const QString selectedDir = QFileDialog::getExistingDirectory(
+        this,
+        QString::fromUtf8(u8"选择录制位置"),
+        startDir,
+        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+    if (selectedDir.isEmpty()) return;
+
+    m_sessionRootDir = selectedDir;
+    saveSessionConfig();
+
+    if (m_btnSelectSaveDir) {
+        m_btnSelectSaveDir->setToolTip(m_sessionRootDir);
+    }
+
+    appendLog(QStringLiteral("Session root selected: %1").arg(m_sessionRootDir));
+}
+
 void MainWindow::onOpenDevice()
 {
     QString path = QFileDialog::getOpenFileName(
@@ -1238,6 +1475,18 @@ void MainWindow::onStart()
 
     const bool wasAcquiring = m_engine->isContinuousRunning();
     const bool wasClosedLoop = m_closedLoopExperimentActive;
+    const bool wasVoidStim = m_voidStimActive;
+    if (wasVoidStim) {
+        stopVoidStimReplay(false);
+    }
+    if (m_engine && m_engine->isRecording() && m_managedSessionMode != ManagedSessionMode::None) {
+        m_engine->stopBinaryRecording();
+        if (m_stimLog) {
+            m_stimLog->stop();
+        }
+    }
+    if (m_coordinator) m_coordinator->endRun();
+    finalizeManagedSession();
     if (m_coordinator) m_coordinator->cancelPendingStimPhase();
     if (m_experiment) m_experiment->stop();
     m_closedLoopExperimentActive = false;
@@ -1281,6 +1530,23 @@ void MainWindow::onStart()
 void MainWindow::onStartClosedLoop()
 {
     if (!m_engine) return;
+    if (m_closedLoopExperimentActive) {
+        if (m_timeline) {
+            m_timeline->setEpochSec(colletion_time);
+            m_timeline->show();
+            ensureTimelineVisible();
+        }
+        appendLog(QStringLiteral("Closed-loop experiment is already running."));
+        return;
+    }
+    if (m_voidStimActive) {
+        appendLog(QStringLiteral("Virtual stimulation is running; stop it before starting closed-loop."));
+        return;
+    }
+    if (!ensureSessionRootSelected()) {
+        appendLog(QStringLiteral("Please select a session root folder first."));
+        return;
+    }
 
     const bool wasAcquiring = m_engine->isContinuousRunning();
     if (!wasAcquiring) {
@@ -1288,12 +1554,36 @@ void MainWindow::onStartClosedLoop()
     }
     if (!m_engine->isContinuousRunning()) return;
 
+    if (!prepareManagedSession(QStringLiteral("closed_loop"))) {
+        appendLog(QStringLiteral("Failed to create a closed-loop session folder."));
+        if (!wasAcquiring) {
+            m_engine->stopAcquisition();
+        }
+        return;
+    }
+    if (!startManagedRecordingInActiveSession()) {
+        appendLog(QStringLiteral("Failed to start managed recording for closed-loop session."));
+        resetManagedSessionState();
+        if (!wasAcquiring) {
+            m_engine->stopAcquisition();
+        }
+        return;
+    }
+
+    m_managedSessionMode = ManagedSessionMode::ClosedLoop;
+    m_closedLoopCompletedRounds = 0;
+    m_managedSessionClock.restart();
+    m_managedSessionClockActive = true;
+
     m_manualStimConfigApplied = false;
     m_manualStimConfigDirty = true;
     m_manualStimLoadedForCurrentRun = false;
     m_manualStimAppliedSummary.clear();
     m_manualStimAppliedSignature.clear();
-    if (m_coordinator) m_coordinator->cancelPendingStimPhase();
+    if (m_coordinator) {
+        m_coordinator->cancelPendingStimPhase();
+        m_coordinator->beginRun();
+    }
 
     if (m_closedLoopExperimentActive) {
         if (m_timeline) {
@@ -1325,20 +1615,257 @@ void MainWindow::onStartClosedLoop()
     }
 }
 
+void MainWindow::onVoidStim()
+{
+    if (!m_engine) return;
+    if (m_closedLoopExperimentActive) {
+        appendLog(QStringLiteral("Closed-loop experiment is running; stop it before starting virtual stimulation."));
+        return;
+    }
+    if (m_voidStimActive) {
+        appendLog(QStringLiteral("Virtual stimulation is already running."));
+        return;
+    }
+    if (!ensureSessionRootSelected()) {
+        appendLog(QStringLiteral("Please select a session root folder first."));
+        return;
+    }
+
+    const QString startDir =
+        !m_selectedReplayPlanPath.isEmpty()
+            ? QFileInfo(m_selectedReplayPlanPath).absolutePath()
+            : (!m_sessionRootDir.isEmpty() ? m_sessionRootDir : QDir::currentPath());
+    const QString planPath = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("Select stim_plan.json"),
+        startDir,
+        QStringLiteral("Stim Plan JSON (*.json);;All Files (*.*)"));
+    if (planPath.isEmpty()) {
+        return;
+    }
+
+    QByteArray jsonBytes;
+    if (!loadStimPlanJson(planPath, &jsonBytes)) {
+        appendLog(QStringLiteral("Failed to load stim plan JSON: %1").arg(planPath));
+        return;
+    }
+
+    const QJsonDocument doc = QJsonDocument::fromJson(jsonBytes);
+    if (!doc.isObject()) {
+        appendLog(QStringLiteral("Stim plan JSON format is invalid."));
+        return;
+    }
+
+    const QJsonObject root = doc.object();
+    const auto jsonToString = [](const QJsonValue &value) -> QString {
+        return value.toVariant().toString().trimmed();
+    };
+    const auto jsonToLongLong = [&jsonToString](const QJsonValue &value, qint64 fallback) -> qint64 {
+        bool ok = false;
+        const qint64 direct = value.toVariant().toLongLong(&ok);
+        if (ok) return direct;
+        const QString text = jsonToString(value);
+        if (text.isEmpty()) return fallback;
+        const qint64 parsed = text.toLongLong(&ok);
+        return ok ? parsed : fallback;
+    };
+    const auto jsonToInt = [&jsonToString](const QJsonValue &value, int fallback) -> int {
+        bool ok = false;
+        const int direct = value.toVariant().toInt(&ok);
+        if (ok) return direct;
+        const QString text = jsonToString(value);
+        if (text.isEmpty()) return fallback;
+        const int parsed = text.toInt(&ok);
+        return ok ? parsed : fallback;
+    };
+    const auto jsonToDouble = [&jsonToString](const QJsonValue &value, double fallback) -> double {
+        bool ok = false;
+        const double direct = value.toVariant().toDouble(&ok);
+        if (ok) return direct;
+        const QString text = jsonToString(value);
+        if (text.isEmpty()) return fallback;
+        const double parsed = text.toDouble(&ok);
+        return ok ? parsed : fallback;
+    };
+
+    qint64 experimentDurationMs = jsonToLongLong(root.value(QStringLiteral("experiment_duration_ms")), -1);
+    if (experimentDurationMs <= 0) {
+        const double epochSec = jsonToDouble(root.value(QStringLiteral("epoch_sec")), colletion_time);
+        const int roundsCompleted =
+            qMax(1, jsonToInt(root.value(QStringLiteral("rounds_completed")),
+                              jsonToInt(root.value(QStringLiteral("rounds_target")), 1)));
+        experimentDurationMs = qMax<qint64>(1, qRound64(epochSec * 2000.0 * roundsCompleted));
+    }
+
+    struct ReplayEvent {
+        int itemIndex = -1;
+        qint64 timeMs = 0;
+        QString electrode;
+        int amp_uA = 0;
+        int pulses = 1;
+        int triggerSource = 0;
+    };
+
+    QVector<ReplayEvent> replayEvents;
+    const QJsonArray events = root.value(QStringLiteral("events")).toArray();
+    replayEvents.reserve(events.size());
+    for (int i = 0; i < events.size(); ++i) {
+        const QJsonObject obj = events.at(i).toObject();
+
+        int sourcePhaseIndex = jsonToInt(obj.value(QStringLiteral("source_phase_index")), -1);
+        if (sourcePhaseIndex < 0) {
+            const QString phaseText = jsonToString(obj.value(QStringLiteral("source_phase"))).toUpper();
+            if (phaseText == QStringLiteral("A")) sourcePhaseIndex = 0;
+            else if (phaseText == QStringLiteral("B")) sourcePhaseIndex = 1;
+        }
+        if (sourcePhaseIndex != 0) {
+            continue;
+        }
+
+        qint64 timeMs = jsonToLongLong(obj.value(QStringLiteral("fired_time_ms")), -1);
+        if (timeMs < 0) timeMs = jsonToLongLong(obj.value(QStringLiteral("time_ms")), -1);
+        if (timeMs < 0) timeMs = jsonToLongLong(obj.value(QStringLiteral("planned_time_ms")), -1);
+        if (timeMs < 0) {
+            continue;
+        }
+
+        ReplayEvent event;
+        event.itemIndex = jsonToInt(obj.value(QStringLiteral("item_index")), i);
+        event.timeMs = timeMs;
+        event.electrode = jsonToString(obj.value(QStringLiteral("target_electrode")));
+        event.amp_uA = jsonToInt(obj.value(QStringLiteral("amp_uA")), 0);
+        event.pulses = qMax(1, jsonToInt(obj.value(QStringLiteral("pulses")), 1));
+        event.triggerSource = jsonToInt(obj.value(QStringLiteral("trigger_source")), 1);
+        if (event.electrode.isEmpty() || event.amp_uA <= 0) {
+            continue;
+        }
+
+        replayEvents.push_back(event);
+    }
+
+    std::sort(replayEvents.begin(), replayEvents.end(),
+              [](const ReplayEvent &a, const ReplayEvent &b) {
+                  return a.timeMs < b.timeMs;
+              });
+
+    if (m_coordinator) {
+        m_coordinator->cancelPendingStimPhase();
+        m_coordinator->endRun();
+    }
+    if (m_experiment) {
+        m_experiment->stop();
+    }
+
+    const bool wasAcquiring = m_engine->isContinuousRunning();
+    if (!wasAcquiring) {
+        m_engine->startContinuousAcquisition();
+    }
+    if (!m_engine->isContinuousRunning()) {
+        appendLog(QStringLiteral("Failed to start acquisition for virtual stimulation."));
+        return;
+    }
+
+    if (!prepareManagedSession(QStringLiteral("void_stim"))) {
+        appendLog(QStringLiteral("Failed to create a virtual stimulation session folder."));
+        if (!wasAcquiring) {
+            m_engine->stopAcquisition();
+        }
+        return;
+    }
+    if (!startManagedRecordingInActiveSession()) {
+        appendLog(QStringLiteral("Failed to start managed recording for virtual stimulation."));
+        resetManagedSessionState();
+        if (!wasAcquiring) {
+            m_engine->stopAcquisition();
+        }
+        return;
+    }
+
+    m_selectedReplayPlanPath = planPath;
+    m_managedSessionMode = ManagedSessionMode::VoidStim;
+    m_managedSessionClock.restart();
+    m_managedSessionClockActive = true;
+    m_voidStimActive = true;
+    m_closedLoopExperimentActive = false;
+
+    const quint64 replayToken = ++m_voidStimReplayToken;
+    for (const ReplayEvent &event : replayEvents) {
+        if (m_stimLog) {
+            m_stimLog->logPlanned(0, 0, event.itemIndex, double(event.timeMs),
+                                  event.electrode, event.amp_uA, event.pulses, -1, 0.0);
+        }
+
+        const int delayMs = int(qMax<qint64>(0, event.timeMs));
+        QTimer::singleShot(delayMs, this,
+                           [this, replayToken, event]() {
+                               if (replayToken != m_voidStimReplayToken || !m_voidStimActive) return;
+                               if (!m_engine) return;
+                               if (m_stimLog) {
+                                   m_stimLog->logFired(0, 0, event.itemIndex,
+                                                       event.electrode, event.amp_uA, event.pulses);
+                               }
+                               m_engine->applyAdaptiveStim(event.electrode,
+                                                           event.amp_uA,
+                                                           event.pulses,
+                                                           event.triggerSource);
+                           });
+    }
+
+    QTimer::singleShot(int(qMax<qint64>(1, experimentDurationMs)), this,
+                       [this, replayToken]() {
+                           if (replayToken != m_voidStimReplayToken || !m_voidStimActive) return;
+                           onVoidStimReplayCompleted();
+                       });
+
+    appendLog(QStringLiteral("Virtual stimulation started from %1: A-driven events=%2, duration=%3 ms, recording=%4")
+                  .arg(planPath)
+                  .arg(replayEvents.size())
+                  .arg(experimentDurationMs)
+                  .arg(m_activeRecordingPath));
+}
+
 void MainWindow::onStop()
 {
     const bool wasClosedLoop = m_closedLoopExperimentActive;
+    const bool wasVoidStim = m_voidStimActive;
     const bool wasAcquiring = m_engine && m_engine->isContinuousRunning();
+    const bool hadManagedSession = (m_managedSessionMode != ManagedSessionMode::None);
 
-    if (m_coordinator) m_coordinator->cancelPendingStimPhase();
+    stopVoidStimReplay(false);
+    if (m_coordinator) {
+        m_coordinator->cancelPendingStimPhase();
+        m_coordinator->endRun();
+    }
     if (m_experiment) m_experiment->stop();
     m_closedLoopExperimentActive = false;
 
+    if (m_engine && m_engine->isRecording() && hadManagedSession) {
+        m_engine->stopBinaryRecording();
+        if (m_stimLog) {
+            m_stimLog->stop();
+        }
+    }
     if (m_engine && wasAcquiring) {
         m_engine->stopAcquisition();
     }
     if (m_dockTimeline) m_dockTimeline->hide();
     else if (m_timeline) m_timeline->hide();
+
+    finalizeManagedSession();
+    if (wasClosedLoop) {
+        appendLog(QStringLiteral("Closed-loop experiment stopped."));
+        return;
+    }
+    if (wasVoidStim) {
+        appendLog(QStringLiteral("Virtual stimulation stopped."));
+        return;
+    }
+    if (wasAcquiring) {
+        appendLog(QStringLiteral("Continuous acquisition stopped."));
+        return;
+    }
+    appendLog(QStringLiteral("Acquisition is already stopped."));
+    return;
 
     if (wasClosedLoop && wasAcquiring) {
         appendLog("已停止闭环实验采集");
@@ -1455,8 +1982,79 @@ void MainWindow::onABEpochReady(int phaseIndex,
     ensureTimelineVisible();
 }
 
+void MainWindow::onStimPlanned(int epochId,
+                               int phaseIndex,
+                               int itemIndex,
+                               qint64 plannedTimeMs,
+                               const QString &electrode,
+                               int amp_uA,
+                               int pulses,
+                               int ch,
+                               double spike_uV,
+                               int triggerSource)
+{
+    if (m_managedSessionMode != ManagedSessionMode::ClosedLoop) return;
+
+    StimEventRecord record;
+    record.epochId = epochId;
+    record.phaseIndex = phaseIndex;
+    record.itemIndex = itemIndex;
+    record.plannedTimeMs = plannedTimeMs;
+    record.electrode = electrode;
+    record.amp_uA = amp_uA;
+    record.pulses = pulses;
+    record.ch = ch;
+    record.spike_uV = spike_uV;
+    record.triggerSource = triggerSource;
+    m_managedStimEvents.push_back(record);
+}
+
+void MainWindow::onStimFired(int epochId,
+                             int phaseIndex,
+                             int itemIndex,
+                             qint64 firedTimeMs,
+                             const QString &electrode,
+                             int amp_uA,
+                             int pulses,
+                             int ch,
+                             double spike_uV,
+                             int triggerSource)
+{
+    if (m_managedSessionMode != ManagedSessionMode::ClosedLoop) return;
+
+    for (int i = m_managedStimEvents.size() - 1; i >= 0; --i) {
+        StimEventRecord &record = m_managedStimEvents[i];
+        if (record.epochId == epochId &&
+            record.phaseIndex == phaseIndex &&
+            record.itemIndex == itemIndex) {
+            record.firedTimeMs = firedTimeMs;
+            record.electrode = electrode;
+            record.amp_uA = amp_uA;
+            record.pulses = pulses;
+            record.ch = ch;
+            record.triggerSource = triggerSource;
+            record.spike_uV = spike_uV;
+            return;
+        }
+    }
+
+    StimEventRecord record;
+    record.epochId = epochId;
+    record.phaseIndex = phaseIndex;
+    record.itemIndex = itemIndex;
+    record.firedTimeMs = firedTimeMs;
+    record.electrode = electrode;
+    record.amp_uA = amp_uA;
+    record.pulses = pulses;
+    record.ch = ch;
+    record.spike_uV = spike_uV;
+    record.triggerSource = triggerSource;
+    m_managedStimEvents.push_back(record);
+}
+
 void MainWindow::onClosedLoopRoundCompleted(int completedRounds, int targetRounds)
 {
+    m_closedLoopCompletedRounds = completedRounds;
     appendLog(QStringLiteral("Closed-loop round completed: %1/%2")
                   .arg(completedRounds)
                   .arg(targetRounds));
@@ -1464,13 +2062,17 @@ void MainWindow::onClosedLoopRoundCompleted(int completedRounds, int targetRound
 
 void MainWindow::onClosedLoopExperimentCompleted(int completedRounds)
 {
+    m_closedLoopCompletedRounds = completedRounds;
     appendLog(QStringLiteral("Closed-loop experiment completed after %1 round(s); stopping recording and acquisition.")
                   .arg(completedRounds));
 
-    if (m_engine && m_engine->isRecording()) {
-        onRecStop();
-    }
+    onStop();
+}
 
+void MainWindow::onVoidStimReplayCompleted()
+{
+    if (!m_voidStimActive) return;
+    appendLog(QStringLiteral("Virtual stimulation replay completed; stopping recording and acquisition."));
     onStop();
 }
 

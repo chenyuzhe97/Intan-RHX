@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QElapsedTimer>
 #include <QString>
 #include <QVector>
 
@@ -36,6 +37,8 @@ public:
     void setSampleRateHz(double sampleRateHz);
     void setEpochDurationSec(double epochDurationSec);
     void setRoutingConfig(const RoutingConfig &config);
+    void beginRun();
+    void endRun();
     void cancelPendingStimPhase();
 
     void handleEpochReady(int phaseIndex,
@@ -45,6 +48,26 @@ public:
 signals:
     void logMessage(const QString &msg);
     void stimPhaseFinished();
+    void stimPlanned(int epochId,
+                     int phaseIndex,
+                     int itemIndex,
+                     qint64 plannedTimeMs,
+                     const QString &electrode,
+                     int amp_uA,
+                     int pulses,
+                     int ch,
+                     double spike_uV,
+                     int triggerSource);
+    void stimFired(int epochId,
+                   int phaseIndex,
+                   int itemIndex,
+                   qint64 firedTimeMs,
+                   const QString &electrode,
+                   int amp_uA,
+                   int pulses,
+                   int ch,
+                   double spike_uV,
+                   int triggerSource);
 
 private:
     QVector<int> meanSelectedChannels(const QVector<QVector<int>> &channelData,
@@ -64,4 +87,6 @@ private:
     double  m_sampleRateHz = 30000.0;
     double  m_epochDurationSec = 5.0;
     quint64 m_scheduleToken = 0;
+    QElapsedTimer m_runClock;
+    bool    m_runClockActive = false;
 };

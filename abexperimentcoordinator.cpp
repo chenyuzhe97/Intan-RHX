@@ -55,6 +55,20 @@ void ABExperimentCoordinator::setRoutingConfig(const RoutingConfig &config)
     m_config = config;
 }
 
+void ABExperimentCoordinator::beginRun()
+{
+    ++m_scheduleToken;
+    m_runClock.restart();
+    m_runClockActive = true;
+}
+
+void ABExperimentCoordinator::endRun()
+{
+    ++m_scheduleToken;
+    m_runClock.invalidate();
+    m_runClockActive = false;
+}
+
 void ABExperimentCoordinator::cancelPendingStimPhase()
 {
     ++m_scheduleToken;
@@ -159,6 +173,7 @@ void ABExperimentCoordinator::handleEpochReady(int phaseIndex,
     const int triggerSource = (phaseIndex == 0) ? 1 : 0;
     const uint32_t epochStartTs = timeStamps.first();
     const double fs = (m_sampleRateHz > 0.0) ? m_sampleRateHz : 30000.0;
+    const qint64 phaseStartTimeMs = m_runClockActive ? m_runClock.elapsed() : 0;
 
     QVector<ABAlgorithm::Result> candidates;
     candidates.reserve(allResults.size());
@@ -207,6 +222,7 @@ void ABExperimentCoordinator::handleEpochReady(int phaseIndex,
         int delayMs = static_cast<int>(offsetMs);
         if (delayMs < 0) delayMs = 0;
         maxDelayMs = qMax(maxDelayMs, delayMs);
+        const qint64 plannedTimeMs = phaseStartTimeMs + delayMs;
 
         StimTimelineOverlay::Item it;
         it.itemIndex = i;
@@ -223,14 +239,24 @@ void ABExperimentCoordinator::handleEpochReady(int phaseIndex,
             m_stimLog->logPlanned(epochId, phaseIndex, i, offsetMs,
                                   targetElectrode, it.amp_uA, it.pulses, it.ch, it.spike_uV);
         }
+        emit stimPlanned(epochId, phaseIndex, i, plannedTimeMs,
+                         targetElectrode, it.amp_uA, it.pulses, it.ch, it.spike_uV, triggerSource);
 
         QTimer::singleShot(delayMs, this,
-                           [this, scheduleToken, epochId, itemIdx = i,
+                           [this, scheduleToken, epochId, phaseIndex, itemIdx = i,
                             targetElectrode, triggerSource,
-                            amp = it.amp_uA, pulses = it.pulses]() {
+                            amp = it.amp_uA, pulses = it.pulses,
+                            ch = it.ch, spikeUv = it.spike_uV]() {
                                if (scheduleToken != m_scheduleToken) return;
                                if (m_timeline) m_timeline->markFired(epochId, itemIdx);
                                if (!m_engine) return;
+                               const qint64 firedTimeMs = m_runClockActive ? m_runClock.elapsed() : 0;
+                               if (m_stimLog) {
+                                   m_stimLog->logFired(epochId, phaseIndex, itemIdx,
+                                                       targetElectrode, amp, pulses);
+                               }
+                               emit stimFired(epochId, phaseIndex, itemIdx, firedTimeMs,
+                                              targetElectrode, amp, pulses, ch, spikeUv, triggerSource);
                                m_engine->applyAdaptiveStim(targetElectrode, amp, pulses, triggerSource);
                            });
     }

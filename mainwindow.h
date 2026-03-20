@@ -13,6 +13,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDockWidget>
+#include <QElapsedTimer>
 #include <QLineEdit>
 #include <QSpinBox>
 
@@ -37,8 +38,10 @@ public:
 
 private slots:
     void onOpenDevice();
+    void onSelectRecordingLocation();
     void onStart();
     void onStartClosedLoop();
+    void onVoidStim();
     void onStop();
     void onRecStart();
     void onRecStop();
@@ -62,6 +65,27 @@ private slots:
                         const QVector<QVector<int>> &channelData);
     void onClosedLoopRoundCompleted(int completedRounds, int targetRounds);
     void onClosedLoopExperimentCompleted(int completedRounds);
+    void onStimPlanned(int epochId,
+                       int phaseIndex,
+                       int itemIndex,
+                       qint64 plannedTimeMs,
+                       const QString &electrode,
+                       int amp_uA,
+                       int pulses,
+                       int ch,
+                       double spike_uV,
+                       int triggerSource);
+    void onStimFired(int epochId,
+                     int phaseIndex,
+                     int itemIndex,
+                     qint64 firedTimeMs,
+                     const QString &electrode,
+                     int amp_uA,
+                     int pulses,
+                     int ch,
+                     double spike_uV,
+                     int triggerSource);
+    void onVoidStimReplayCompleted();
 
     void handleError(const QString &msg);
     void handleLog(const QString &msg);
@@ -90,18 +114,50 @@ private:
     void setupElectrodeConfigDock();
     void loadElectrodeConfig();
     void saveElectrodeConfig() const;
+    void loadSessionConfig();
+    void saveSessionConfig() const;
 
     static QString formatChannels1Based(const QVector<int> &zeroBased);
     static bool parseChannels1Based(const QString &text, QVector<int> &outZeroBased, QString *err = nullptr);
+    bool ensureSessionRootSelected();
+    bool prepareManagedSession(const QString &sessionPrefix);
+    bool startManagedRecordingInActiveSession();
+    void finalizeManagedSession();
+    void resetManagedSessionState();
+    bool writeStimPlanJson(qint64 durationMs) const;
+    bool loadStimPlanJson(const QString &filePath, QByteArray *jsonBytes = nullptr) const;
+    void stopVoidStimReplay(bool logMessage);
 
 private:
+    struct StimEventRecord {
+        int epochId = -1;
+        int phaseIndex = -1;
+        int itemIndex = -1;
+        qint64 plannedTimeMs = -1;
+        qint64 firedTimeMs = -1;
+        QString electrode;
+        int amp_uA = 0;
+        int pulses = 0;
+        int ch = -1;
+        double spike_uV = 0.0;
+        int triggerSource = 0;
+    };
+
+    enum class ManagedSessionMode {
+        None,
+        ClosedLoop,
+        VoidStim
+    };
+
     QWidget        *m_central = nullptr;
     QVBoxLayout    *m_layout  = nullptr;
 
     // ===== buttons =====
     QPushButton    *m_btnOpen            = nullptr;
+    QPushButton    *m_btnSelectSaveDir   = nullptr;
     QPushButton    *m_btnStart           = nullptr;
     QPushButton    *m_btnStartClosedLoop = nullptr;
+    QPushButton    *m_btnVoidStim        = nullptr;
     QPushButton    *m_btnStop            = nullptr;
     QPushButton    *m_btnStimOnce        = nullptr;
     QPushButton    *m_btnRecStart        = nullptr;
@@ -159,9 +215,22 @@ private:
     double m_maxWindowSec = 20.0;      // ring buffer 预留 20s
 
     bool   m_closedLoopExperimentActive = false;
+    bool   m_voidStimActive = false;
 
     // 拼写保留
     double colletion_time = 60.0;
+    int    m_closedLoopCompletedRounds = 0;
+
+    QString            m_sessionRootDir;
+    QString            m_activeSessionDir;
+    QString            m_activeRecordingPath;
+    QString            m_activeStimPlanPath;
+    QString            m_selectedReplayPlanPath;
+    ManagedSessionMode m_managedSessionMode = ManagedSessionMode::None;
+    QElapsedTimer      m_managedSessionClock;
+    bool               m_managedSessionClockActive = false;
+    QVector<StimEventRecord> m_managedStimEvents;
+    quint64            m_voidStimReplayToken = 0;
 
     // ====== 普通采集刺激配置 ======
     QDockWidget *m_dockManualStim = nullptr;
