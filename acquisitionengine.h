@@ -49,11 +49,11 @@ public:
 
     // 简单的刺激配置接口：把电极参数交给底层 Controller
     void configureStim(const QString &electrodeName,
-                       int firstPhaseAmplitude,
-                       int secondPhaseAmplitude,
-                       int firstPhaseDuration_us,
-                       int secondPhaseDuration_us,
-                       int interPhaseDelay_us,
+                      int firstPhaseAmplitude_nA,
+                      int secondPhaseAmplitude_nA,
+                      int firstPhaseDuration_us,
+                      int secondPhaseDuration_us,
+                      int interPhaseDelay_us,
                        int numPulses,
                        int triggerSource);
 
@@ -62,9 +62,19 @@ public:
 
     // ⭐ 根据算法结果构造刺激并触发
     void applyAdaptiveStim(const QString &electrodeName,
-                           int amplitude_uA,
-                           int numPulses,
-                           int triggerSource);
+                          int amplitude_uA,
+                          int numPulses,
+                          int triggerSource);
+    void applyFixedReplayStim(const QString &electrodeName,
+                              int amplitude_uA,
+                              int phase_us,
+                              int triggerSource);
+    void applyFixedTrainStim(const QString &electrodeName,
+                             int amplitude_uA,
+                             int phase_us,
+                             double frequency_hz,
+                             int duration_ms,
+                             int triggerSource);
 
     // 暴露底层指针
     RHXController* rhx() const { return m_rhxController; }

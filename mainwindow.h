@@ -42,6 +42,7 @@ private slots:
     void onStart();
     void onStartClosedLoop();
     void onVoidStim();
+    void onFixedStimExperiment();
     void onStop();
     void onRecStart();
     void onRecStop();
@@ -86,6 +87,7 @@ private slots:
                      double spike_uV,
                      int triggerSource);
     void onVoidStimReplayCompleted();
+    void onFixedStimReplayCompleted();
 
     void handleError(const QString &msg);
     void handleLog(const QString &msg);
@@ -125,6 +127,7 @@ private:
     void finalizeManagedSession();
     void resetManagedSessionState();
     bool writeStimPlanJson(qint64 durationMs) const;
+    bool writeFixedStimSessionJson(qint64 durationMs) const;
     bool loadStimPlanJson(const QString &filePath, QByteArray *jsonBytes = nullptr) const;
     void stopVoidStimReplay(bool logMessage);
 
@@ -146,7 +149,8 @@ private:
     enum class ManagedSessionMode {
         None,
         ClosedLoop,
-        VoidStim
+        VoidStim,
+        FixedStim
     };
 
     QWidget        *m_central = nullptr;
@@ -158,6 +162,7 @@ private:
     QPushButton    *m_btnStart           = nullptr;
     QPushButton    *m_btnStartClosedLoop = nullptr;
     QPushButton    *m_btnVoidStim        = nullptr;
+    QPushButton    *m_btnFixedStim       = nullptr;
     QPushButton    *m_btnStop            = nullptr;
     QPushButton    *m_btnStimOnce        = nullptr;
     QPushButton    *m_btnRecStart        = nullptr;
@@ -231,6 +236,13 @@ private:
     bool               m_managedSessionClockActive = false;
     QVector<StimEventRecord> m_managedStimEvents;
     quint64            m_voidStimReplayToken = 0;
+    QString            m_activeFixedStimElectrode;
+    int                m_activeFixedStimAmp_uA = 0;
+    int                m_activeFixedStimPhaseUs = 0;
+    double             m_activeFixedStimFreqHz = 0.0;
+    int                m_activeFixedStimTriggerSource = 0;
+    int                m_activeFixedStimRounds = 0;
+    int                m_activeFixedStimPulsesPerTrain = 0;
 
     // ====== 普通采集刺激配置 ======
     QDockWidget *m_dockManualStim = nullptr;
@@ -273,6 +285,10 @@ private:
     QLineEdit *m_editSense_A_b = nullptr;
     QLineEdit *m_editSense_B_a = nullptr;
     QLineEdit *m_editSense_B_b = nullptr;
+
+    QSpinBox  *m_spinFixedStimAmp = nullptr;
+    QSpinBox  *m_spinFixedStimPhaseUs = nullptr;
+    QDoubleSpinBox *m_spinFixedStimFreqHz = nullptr;
 
     QSpinBox  *m_spinStim_A_a = nullptr;
     QSpinBox  *m_spinStim_A_b = nullptr;

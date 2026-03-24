@@ -154,16 +154,16 @@ void Controller::setStimSequenceParameters(ElectrodeParameters *parameters)
 
     // 你这边改过的：μA → Intan 刺激 DAC 代码的转换
     qDebug()<<"原始刺激大小：" << parameters->firstPhaseAmplitude;
+    // App-side amplitudes are stored in nA. The Intan magnitude path uses
+    // microamp DAC steps, so convert nA -> uA first (/1000), then divide
+    // by currentstep (uA per DAC code).
     int firstPhaseMagnitude  = qRound(parameters->firstPhaseAmplitude  / currentstep / 1000.0);
     int secondPhaseMagnitude = qRound(parameters->secondPhaseAmplitude / currentstep / 1000.0);
 
     qDebug()<<"当前刺激大小:" <<firstPhaseMagnitude << "mv";
 
-    // int posMag = firstPhaseMagnitude;
-    // int negMag = secondPhaseMagnitude;
-
-    int posMag = parameters->firstPhaseAmplitude/5;
-    int negMag = parameters->secondPhaseAmplitude/5;
+    int posMag = firstPhaseMagnitude;
+    int negMag = secondPhaseMagnitude;
 
     commandSequenceLength =
         chipRegisters.createCommandListSetStimMagnitudes(commandList,

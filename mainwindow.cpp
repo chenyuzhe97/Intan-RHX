@@ -21,6 +21,7 @@
 #include <QCloseEvent>
 
 #include <algorithm>
+#include <limits>
 
 static StackedWaveWidget::FilterSettings buildFilterSettingsFromUi(
     QCheckBox *chkFilter, QComboBox *cmbType,
@@ -318,6 +319,7 @@ void MainWindow::setupUi()
 
         m_btnSelectSaveDir   = new QPushButton(QString::fromUtf8(u8"选择录制位置"), this);
         m_btnVoidStim        = new QPushButton(QString::fromUtf8(u8"虚空刺激"), this);
+        m_btnFixedStim       = new QPushButton(QString::fromUtf8(u8"固定刺激实验"), this);
 
         m_btnOpen            = new QPushButton(tr("打开设备"), this);
         m_btnStart           = new QPushButton(tr("普通采集"), this);
@@ -333,6 +335,7 @@ void MainWindow::setupUi()
         row->addWidget(m_btnStart);
         row->addWidget(m_btnStartClosedLoop);
         row->addWidget(m_btnVoidStim);
+        row->addWidget(m_btnFixedStim);
         row->addWidget(m_btnStop);
         row->addWidget(m_btnRecStart);
         row->addWidget(m_btnRecStop);
@@ -500,6 +503,7 @@ void MainWindow::setupUi()
     connect(m_btnStart,           &QPushButton::clicked, this, &MainWindow::onStart);
     connect(m_btnStartClosedLoop, &QPushButton::clicked, this, &MainWindow::onStartClosedLoop);
     connect(m_btnVoidStim,        &QPushButton::clicked, this, &MainWindow::onVoidStim);
+    connect(m_btnFixedStim,       &QPushButton::clicked, this, &MainWindow::onFixedStimExperiment);
     connect(m_btnStop,     &QPushButton::clicked, this, &MainWindow::onStop);
     connect(m_btnRecStart, &QPushButton::clicked, this, &MainWindow::onRecStart);
     connect(m_btnRecStop,  &QPushButton::clicked, this, &MainWindow::onRecStop);
@@ -885,6 +889,9 @@ bool MainWindow::configureManualStimHardware(QString *summary)
     const int firstPhaseUs = m_spinManualFirstPhaseUs ? m_spinManualFirstPhaseUs->value() : 500;
     const int secondPhaseUs = m_spinManualSecondPhaseUs ? m_spinManualSecondPhaseUs->value() : 500;
     const int interphaseUs = m_spinManualInterphaseUs ? m_spinManualInterphaseUs->value() : 500;
+    // Manual GUI is entered in uA, while configureStim() expects nA.
+    const int firstAmp_nA = firstAmp * 1000;
+    const int secondAmp_nA = secondAmp * 1000;
 
     const bool resumeContinuous = m_engine->isContinuousRunning();
     if (resumeContinuous) {
@@ -895,8 +902,8 @@ bool MainWindow::configureManualStimHardware(QString *summary)
     }
 
     m_engine->configureStim(electrodeName,
-                            firstAmp,
-                            secondAmp,
+                            firstAmp_nA,
+                            secondAmp_nA,
                             firstPhaseUs,
                             secondPhaseUs,
                             interphaseUs,
@@ -979,6 +986,28 @@ void MainWindow::setupElectrodeConfigDock()
     experimentForm->addRow(tr("Rounds"), m_spinClosedLoopRounds);
     experimentLayout->addLayout(experimentForm);
 
+    QGroupBox *gbFixedReplay = new QGroupBox(tr("固定刺激实验参数"), panel);
+    QFormLayout *fixedReplayLayout = new QFormLayout(gbFixedReplay);
+    m_spinFixedStimAmp = new QSpinBox(gbFixedReplay);
+    m_spinFixedStimAmp->setRange(1, 5000);
+    m_spinFixedStimAmp->setSingleStep(5);
+    m_spinFixedStimAmp->setValue(20);
+    m_spinFixedStimAmp->setSuffix(" uA");
+    m_spinFixedStimPhaseUs = new QSpinBox(gbFixedReplay);
+    m_spinFixedStimPhaseUs->setRange(1, 20000);
+    m_spinFixedStimPhaseUs->setSingleStep(10);
+    m_spinFixedStimPhaseUs->setValue(500);
+    m_spinFixedStimPhaseUs->setSuffix(" us");
+    m_spinFixedStimFreqHz = new QDoubleSpinBox(gbFixedReplay);
+    m_spinFixedStimFreqHz->setRange(0.1, 1000.0);
+    m_spinFixedStimFreqHz->setDecimals(2);
+    m_spinFixedStimFreqHz->setSingleStep(0.5);
+    m_spinFixedStimFreqHz->setValue(10.0);
+    m_spinFixedStimFreqHz->setSuffix(" Hz");
+    fixedReplayLayout->addRow(QString::fromUtf8(u8"固定频率"), m_spinFixedStimFreqHz);
+    fixedReplayLayout->addRow(tr("固定振幅"), m_spinFixedStimAmp);
+    fixedReplayLayout->addRow(tr("固定相宽"), m_spinFixedStimPhaseUs);
+
     QGroupBox *gbSense = new QGroupBox(tr("闭环感受通道 (UI 用 1-based)"), panel);
     QFormLayout *senseLayout = new QFormLayout(gbSense);
 
@@ -1022,6 +1051,7 @@ void MainWindow::setupElectrodeConfigDock()
     m_btnApplyElectrode = new QPushButton(tr("应用闭环配置"), panel);
 
     root->addWidget(gbExperiment);
+    root->addWidget(gbFixedReplay);
     root->addWidget(gbSense);
     root->addWidget(gbStim);
     root->addWidget(m_btnApplyElectrode);
@@ -1075,6 +1105,21 @@ void MainWindow::loadElectrodeConfig()
         const int savedRounds = qMax(1, s.value("closed_loop/rounds", m_spinClosedLoopRounds->value()).toInt());
         QSignalBlocker blocker(m_spinClosedLoopRounds);
         m_spinClosedLoopRounds->setValue(savedRounds);
+    }
+    if (m_spinFixedStimAmp) {
+        const int savedAmp = qMax(1, s.value("fixed_stim/amp_uA", m_spinFixedStimAmp->value()).toInt());
+        QSignalBlocker blocker(m_spinFixedStimAmp);
+        m_spinFixedStimAmp->setValue(savedAmp);
+    }
+    if (m_spinFixedStimPhaseUs) {
+        const int savedPhaseUs = qMax(1, s.value("fixed_stim/phase_us", m_spinFixedStimPhaseUs->value()).toInt());
+        QSignalBlocker blocker(m_spinFixedStimPhaseUs);
+        m_spinFixedStimPhaseUs->setValue(savedPhaseUs);
+    }
+    if (m_spinFixedStimFreqHz) {
+        const double savedFreqHz = qMax(0.1, s.value("fixed_stim/freq_hz", m_spinFixedStimFreqHz->value()).toDouble());
+        QSignalBlocker blocker(m_spinFixedStimFreqHz);
+        m_spinFixedStimFreqHz->setValue(savedFreqHz);
     }
 
     const QString tA_a = s.value("electrode/sense_A_a", m_editSense_A_a->text()).toString();
@@ -1130,6 +1175,9 @@ void MainWindow::saveElectrodeConfig() const
     QSettings s;
     s.setValue("closed_loop/epoch_sec", m_spinEpochSec ? m_spinEpochSec->value() : colletion_time);
     s.setValue("closed_loop/rounds", m_spinClosedLoopRounds ? m_spinClosedLoopRounds->value() : 1);
+    s.setValue("fixed_stim/amp_uA", m_spinFixedStimAmp ? m_spinFixedStimAmp->value() : 20);
+    s.setValue("fixed_stim/phase_us", m_spinFixedStimPhaseUs ? m_spinFixedStimPhaseUs->value() : 500);
+    s.setValue("fixed_stim/freq_hz", m_spinFixedStimFreqHz ? m_spinFixedStimFreqHz->value() : 10.0);
     s.setValue("electrode/sense_A_a", m_editSense_A_a->text().trimmed());
     s.setValue("electrode/sense_A_b", m_editSense_A_b->text().trimmed());
     s.setValue("electrode/sense_B_a", m_editSense_B_a->text().trimmed());
@@ -1233,6 +1281,12 @@ void MainWindow::finalizeManagedSession()
         } else {
             appendLog(QStringLiteral("Failed to copy replay stim plan into session folder."));
         }
+    } else if (m_managedSessionMode == ManagedSessionMode::FixedStim) {
+        if (writeFixedStimSessionJson(durationMs)) {
+            appendLog(QStringLiteral("Fixed-stim session JSON saved: %1").arg(m_activeStimPlanPath));
+        } else {
+            appendLog(QStringLiteral("Failed to save fixed-stim session JSON: %1").arg(m_activeStimPlanPath));
+        }
     }
 
     resetManagedSessionState();
@@ -1250,6 +1304,13 @@ void MainWindow::resetManagedSessionState()
     m_managedStimEvents.clear();
     m_closedLoopCompletedRounds = 0;
     m_voidStimActive = false;
+    m_activeFixedStimElectrode.clear();
+    m_activeFixedStimAmp_uA = 0;
+    m_activeFixedStimPhaseUs = 0;
+    m_activeFixedStimFreqHz = 0.0;
+    m_activeFixedStimTriggerSource = 0;
+    m_activeFixedStimRounds = 0;
+    m_activeFixedStimPulsesPerTrain = 0;
 }
 
 bool MainWindow::writeStimPlanJson(qint64 durationMs) const
@@ -1296,6 +1357,68 @@ bool MainWindow::writeStimPlanJson(qint64 durationMs) const
 
     const QJsonDocument doc(root);
     file.write(doc.toJson(QJsonDocument::Indented));
+    file.close();
+    return true;
+}
+
+bool MainWindow::writeFixedStimSessionJson(qint64 durationMs) const
+{
+    if (m_activeStimPlanPath.isEmpty()) {
+        return false;
+    }
+
+    QJsonArray events;
+    for (const StimEventRecord &ev : m_managedStimEvents) {
+        QJsonObject obj;
+        obj["item_index"] = ev.itemIndex;
+        obj["planned_time_ms"] = QString::number(ev.plannedTimeMs);
+        obj["fired_time_ms"] = QString::number(ev.firedTimeMs);
+        obj["time_ms"] = QString::number(ev.firedTimeMs >= 0 ? ev.firedTimeMs : ev.plannedTimeMs);
+        obj["target_electrode"] = ev.electrode;
+        obj["amp_uA"] = ev.amp_uA;
+        obj["phase_us"] = m_activeFixedStimPhaseUs;
+        obj["frequency_hz"] = m_activeFixedStimFreqHz;
+        obj["pulses"] = ev.pulses;
+        obj["trigger_source"] = ev.triggerSource;
+        events.append(obj);
+    }
+
+    constexpr qint64 kCollectPreMs = 60000;
+    constexpr qint64 kStimWindowMs = 60000;
+    constexpr qint64 kCollectPostMs = 60000;
+    constexpr qint64 kIdleMs = 60000;
+    constexpr qint64 kRoundDurationMs = kCollectPreMs + kStimWindowMs + kCollectPostMs + kIdleMs;
+
+    QJsonObject root;
+    root["schema_version"] = 1;
+    root["session_type"] = "fixed_stim";
+    root["created_at_iso"] = QDateTime::currentDateTime().toString(Qt::ISODateWithMs);
+    root["experiment_duration_ms"] = QString::number(qMax<qint64>(0, durationMs));
+    root["rounds_target"] = m_activeFixedStimRounds > 0 ? m_activeFixedStimRounds : 1;
+    root["round_duration_ms"] = QString::number(kRoundDurationMs);
+    root["collect_pre_ms"] = QString::number(kCollectPreMs);
+    root["stim_window_start_ms"] = QString::number(kCollectPreMs);
+    root["stim_window_duration_ms"] = QString::number(kStimWindowMs);
+    root["collect_post_ms"] = QString::number(kCollectPostMs);
+    root["idle_ms"] = QString::number(kIdleMs);
+    root["recording_file"] = QFileInfo(m_activeRecordingPath).fileName();
+    root["stim_log_file"] = QStringLiteral("stim_log.csv");
+    root["target_electrode"] = m_activeFixedStimElectrode;
+    root["trigger_source"] = m_activeFixedStimTriggerSource;
+    root["fixed_waveform"] = QStringLiteral("symmetric_biphasic");
+    root["fixed_amplitude_uA"] = m_activeFixedStimAmp_uA;
+    root["fixed_phase_us"] = m_activeFixedStimPhaseUs;
+    root["fixed_frequency_hz"] = m_activeFixedStimFreqHz;
+    root["fixed_num_pulses_per_train"] = m_activeFixedStimPulsesPerTrain;
+    root["fixed_interphase_us"] = 0;
+    root["events"] = events;
+
+    QFile file(m_activeStimPlanPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        return false;
+    }
+
+    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
     file.close();
     return true;
 }
@@ -1540,7 +1663,7 @@ void MainWindow::onStartClosedLoop()
         return;
     }
     if (m_voidStimActive) {
-        appendLog(QStringLiteral("Virtual stimulation is running; stop it before starting closed-loop."));
+        appendLog(QStringLiteral("A replay stimulation experiment is running; stop it before starting closed-loop."));
         return;
     }
     if (!ensureSessionRootSelected()) {
@@ -1623,7 +1746,7 @@ void MainWindow::onVoidStim()
         return;
     }
     if (m_voidStimActive) {
-        appendLog(QStringLiteral("Virtual stimulation is already running."));
+        appendLog(QStringLiteral("A replay stimulation experiment is already running."));
         return;
     }
     if (!ensureSessionRootSelected()) {
@@ -1824,8 +1947,174 @@ void MainWindow::onVoidStim()
                   .arg(m_activeRecordingPath));
 }
 
+void MainWindow::onFixedStimExperiment()
+{
+    if (!m_engine) return;
+    if (m_closedLoopExperimentActive) {
+        appendLog(QStringLiteral("Closed-loop experiment is running; stop it before starting fixed-stim experiment."));
+        return;
+    }
+    if (m_voidStimActive) {
+        appendLog(QStringLiteral("A stimulation experiment is already running."));
+        return;
+    }
+    if (!ensureSessionRootSelected()) {
+        appendLog(QStringLiteral("Please select a session root folder first."));
+        return;
+    }
+
+    commitManualStimEdits();
+    saveManualStimConfig();
+    saveElectrodeConfig();
+    saveSessionConfig();
+
+    constexpr qint64 kCollectPreMs = 60000;
+    constexpr qint64 kStimWindowMs = 60000;
+    constexpr qint64 kCollectPostMs = 60000;
+    constexpr qint64 kIdleMs = 60000;
+    constexpr qint64 kRoundDurationMs = kCollectPreMs + kStimWindowMs + kCollectPostMs + kIdleMs;
+
+    const QString electrodeName = manualStimElectrodeName();
+    const int triggerSource = m_spinManualTriggerSource ? m_spinManualTriggerSource->value() : 0;
+    const int fixedAmp_uA = m_spinFixedStimAmp ? m_spinFixedStimAmp->value() : 20;
+    const int fixedPhaseUs = m_spinFixedStimPhaseUs ? m_spinFixedStimPhaseUs->value() : 500;
+    const double fixedFreqHz = m_spinFixedStimFreqHz ? m_spinFixedStimFreqHz->value() : 10.0;
+    const int targetRounds = m_spinClosedLoopRounds ? m_spinClosedLoopRounds->value() : 1;
+
+    const int periodUs = qMax(1, qRound(1000000.0 / fixedFreqHz));
+    const int stimActiveUs = fixedPhaseUs * 2;
+    if (periodUs <= stimActiveUs) {
+        appendLog(QStringLiteral("Fixed-stim frequency is too high for the selected phase width. Reduce frequency or phase width."));
+        return;
+    }
+    const int pulsesPerTrain = qMax(1, qRound((kStimWindowMs / 1000.0) * fixedFreqHz));
+
+    const qint64 experimentDurationMs = qint64(targetRounds) * kRoundDurationMs;
+    if (experimentDurationMs > std::numeric_limits<int>::max()) {
+        appendLog(QStringLiteral("Fixed-stim experiment is too long for the current scheduler. Please reduce rounds."));
+        return;
+    }
+
+    if (m_coordinator) {
+        m_coordinator->cancelPendingStimPhase();
+        m_coordinator->endRun();
+    }
+    if (m_experiment) {
+        m_experiment->stop();
+    }
+
+    const bool wasAcquiring = m_engine->isContinuousRunning();
+    if (!wasAcquiring) {
+        m_engine->startContinuousAcquisition();
+    }
+    if (!m_engine->isContinuousRunning()) {
+        appendLog(QStringLiteral("Failed to start acquisition for fixed-stim experiment."));
+        return;
+    }
+
+    if (!prepareManagedSession(QStringLiteral("fixed_stim"))) {
+        appendLog(QStringLiteral("Failed to create a fixed-stim session folder."));
+        if (!wasAcquiring) {
+            m_engine->stopAcquisition();
+        }
+        return;
+    }
+    if (!startManagedRecordingInActiveSession()) {
+        appendLog(QStringLiteral("Failed to start managed recording for fixed-stim experiment."));
+        resetManagedSessionState();
+        if (!wasAcquiring) {
+            m_engine->stopAcquisition();
+        }
+        return;
+    }
+
+    m_selectedReplayPlanPath.clear();
+    m_managedSessionMode = ManagedSessionMode::FixedStim;
+    m_managedSessionClock.restart();
+    m_managedSessionClockActive = true;
+    m_voidStimActive = true;
+    m_closedLoopExperimentActive = false;
+    m_activeFixedStimElectrode = electrodeName;
+    m_activeFixedStimAmp_uA = fixedAmp_uA;
+    m_activeFixedStimPhaseUs = fixedPhaseUs;
+    m_activeFixedStimFreqHz = fixedFreqHz;
+    m_activeFixedStimTriggerSource = triggerSource;
+    m_activeFixedStimRounds = targetRounds;
+    m_activeFixedStimPulsesPerTrain = pulsesPerTrain;
+
+    const quint64 replayToken = ++m_voidStimReplayToken;
+    for (int roundIndex = 0; roundIndex < targetRounds; ++roundIndex) {
+        const qint64 stimStartMs = qint64(roundIndex) * kRoundDurationMs + kCollectPreMs;
+        if (stimStartMs > std::numeric_limits<int>::max()) {
+            appendLog(QStringLiteral("Fixed-stim schedule exceeds the current timer limit. Please reduce rounds."));
+            onStop();
+            return;
+        }
+
+        StimEventRecord record;
+        record.epochId = roundIndex + 1;
+        record.phaseIndex = -1;
+        record.itemIndex = roundIndex;
+        record.plannedTimeMs = stimStartMs;
+        record.electrode = electrodeName;
+        record.amp_uA = fixedAmp_uA;
+        record.pulses = pulsesPerTrain;
+        record.triggerSource = triggerSource;
+        m_managedStimEvents.push_back(record);
+
+        if (m_stimLog) {
+            m_stimLog->logPlanned(-1, -1, roundIndex, double(stimStartMs),
+                                  electrodeName, fixedAmp_uA, pulsesPerTrain, -1, 0.0);
+        }
+
+        QTimer::singleShot(int(stimStartMs), this,
+                           [this, replayToken, roundIndex, stimStartMs,
+                            electrodeName, fixedAmp_uA, fixedPhaseUs,
+                            fixedFreqHz, triggerSource, pulsesPerTrain]() {
+                               if (replayToken != m_voidStimReplayToken || !m_voidStimActive) return;
+                               if (!m_engine) return;
+
+                               const qint64 firedTimeMs =
+                                   m_managedSessionClockActive ? m_managedSessionClock.elapsed() : stimStartMs;
+                               for (int i = m_managedStimEvents.size() - 1; i >= 0; --i) {
+                                   StimEventRecord &record = m_managedStimEvents[i];
+                                   if (record.itemIndex == roundIndex && record.plannedTimeMs == stimStartMs) {
+                                       record.firedTimeMs = firedTimeMs;
+                                       break;
+                                   }
+                               }
+                               if (m_stimLog) {
+                                   m_stimLog->logFired(-1, -1, roundIndex,
+                                                       electrodeName, fixedAmp_uA, pulsesPerTrain);
+                               }
+                               m_engine->applyFixedTrainStim(electrodeName,
+                                                             fixedAmp_uA,
+                                                             fixedPhaseUs,
+                                                             fixedFreqHz,
+                                                             int(kStimWindowMs),
+                                                             triggerSource);
+                           });
+    }
+
+    QTimer::singleShot(int(qMax<qint64>(1, experimentDurationMs)), this,
+                       [this, replayToken]() {
+                           if (replayToken != m_voidStimReplayToken || !m_voidStimActive) return;
+                           onFixedStimReplayCompleted();
+                       });
+
+    appendLog(QStringLiteral("Fixed-stim experiment started: target=%1, amplitude=%2 uA, phase=%3 us, frequency=%4 Hz, rounds=%5, duration=%6 ms, recording=%7")
+                  .arg(electrodeName)
+                  .arg(fixedAmp_uA)
+                  .arg(fixedPhaseUs)
+                  .arg(fixedFreqHz, 0, 'f', 3)
+                  .arg(targetRounds)
+                  .arg(experimentDurationMs)
+                  .arg(m_activeRecordingPath));
+}
+
 void MainWindow::onStop()
 {
+    const ManagedSessionMode modeBeforeStop = m_managedSessionMode;
     const bool wasClosedLoop = m_closedLoopExperimentActive;
     const bool wasVoidStim = m_voidStimActive;
     const bool wasAcquiring = m_engine && m_engine->isContinuousRunning();
@@ -1852,11 +2141,15 @@ void MainWindow::onStop()
     else if (m_timeline) m_timeline->hide();
 
     finalizeManagedSession();
-    if (wasClosedLoop) {
+    if (modeBeforeStop == ManagedSessionMode::ClosedLoop || wasClosedLoop) {
         appendLog(QStringLiteral("Closed-loop experiment stopped."));
         return;
     }
-    if (wasVoidStim) {
+    if (modeBeforeStop == ManagedSessionMode::FixedStim) {
+        appendLog(QStringLiteral("Fixed-stim experiment stopped."));
+        return;
+    }
+    if (modeBeforeStop == ManagedSessionMode::VoidStim || wasVoidStim) {
         appendLog(QStringLiteral("Virtual stimulation stopped."));
         return;
     }
@@ -2073,6 +2366,13 @@ void MainWindow::onVoidStimReplayCompleted()
 {
     if (!m_voidStimActive) return;
     appendLog(QStringLiteral("Virtual stimulation replay completed; stopping recording and acquisition."));
+    onStop();
+}
+
+void MainWindow::onFixedStimReplayCompleted()
+{
+    if (!m_voidStimActive) return;
+    appendLog(QStringLiteral("Fixed-stim experiment completed; stopping recording and acquisition."));
     onStop();
 }
 

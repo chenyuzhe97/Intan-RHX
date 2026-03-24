@@ -502,8 +502,8 @@ void AcquisitionEngine::writeBlockStream()
 // ====== 刺激相关接口 ======
 
 void AcquisitionEngine::configureStim(const QString &electrodeName,
-                                      int firstPhaseAmplitude,
-                                      int secondPhaseAmplitude,
+                                      int firstPhaseAmplitude_nA,
+                                      int secondPhaseAmplitude_nA,
                                       int firstPhaseDuration_us,
                                       int secondPhaseDuration_us,
                                       int interPhaseDelay_us,
@@ -529,8 +529,8 @@ void AcquisitionEngine::configureStim(const QString &electrodeName,
                               refractoryPeriod_us);
     ele->interphaseDelay = interPhaseDelay_us;
     ele->refractoryPeriod = refractoryPeriod_us;
-    ele->SetStimulationAmplitude(firstPhaseAmplitude,
-                                 secondPhaseAmplitude);
+    ele->SetStimulationAmplitude(firstPhaseAmplitude_nA,
+                                 secondPhaseAmplitude_nA);
     ele->SetStimulationSource(triggerSource);
     ele->numOfPulses = numPulses;
 
@@ -567,10 +567,13 @@ void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
     int firstDur_us   = 500;
     int secondDur_us  = 500;
     int interphase_us = 500;
+    // Algorithm output is in uA. Low-level stimulation parameters are stored
+    // in nA, and the closed-loop path keeps its experiment-specific /5 scaling.
+    const int closedLoopAmplitude_nA = qMax(1, qRound(amplitude_uA * 1000.0 / 5.0));
 
     configureStim(electrodeName,
-                  amplitude_uA,   // firstPhaseAmplitude
-                  amplitude_uA,   // secondPhaseAmplitude
+                  closedLoopAmplitude_nA,
+                  closedLoopAmplitude_nA,
                   firstDur_us,
                   secondDur_us,
                   interphase_us,
@@ -594,7 +597,111 @@ void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
     }
 }
 
+void AcquisitionEngine::applyFixedReplayStim(const QString &electrodeName,
+                                             int amplitude_uA,
+                                             int phase_us,
+                                             int triggerSource)
+{
+    if (!m_deviceOpened || !m_stimController) return;
+    if (amplitude_uA <= 0 || phase_us <= 0) return;
+
+    const bool resumeAfter = m_continuousRunning;
+    if (resumeAfter) {
+        emit logMessage("固定刺激回放：更新刺激参数…");
+        pauseContinuousForStim();
+    }
+
+    // Fixed replay UI uses uA, while configureStim() expects nA.
+    const int amplitude_nA = amplitude_uA * 1000;
+
+    configureStim(electrodeName,
+                  amplitude_nA,
+                  amplitude_nA,
+                  phase_us,
+                  phase_us,
+                  0,
+                  1,
+                  triggerSource);
+
+    m_stimController->stimTrigger(triggerSource, true);
+    m_stimController->stimTrigger(triggerSource, false);
+
+    emit logMessage(QStringLiteral("固定刺激回放：%1, 幅度=%2 uA, 相宽=%3 us, trigger=%4")
+                        .arg(electrodeName)
+                        .arg(amplitude_uA)
+                        .arg(phase_us)
+                        .arg(triggerSource));
+
+    if (resumeAfter) {
+        resumeContinuousAfterStim();
+    }
+}
+
 // ====== 录制控制 ======
+
+void AcquisitionEngine::applyFixedTrainStim(const QString &electrodeName,
+                                            int amplitude_uA,
+                                            int phase_us,
+                                            double frequency_hz,
+                                            int duration_ms,
+                                            int triggerSource)
+{
+    if (!m_deviceOpened || !m_stimController) return;
+    if (amplitude_uA <= 0 || phase_us <= 0 || frequency_hz <= 0.0 || duration_ms <= 0) return;
+
+    const int period_us = qMax(1, qRound(1000000.0 / frequency_hz));
+    const int stimActive_us = phase_us * 2;
+    if (period_us <= stimActive_us) {
+        emit errorOccurred(QStringLiteral("Fixed-stim frequency too high for the selected phase width: freq=%1 Hz, phase=%2 us")
+                               .arg(frequency_hz, 0, 'f', 3)
+                               .arg(phase_us));
+        return;
+    }
+
+    const int pulses = qMax(1, qRound((duration_ms / 1000.0) * frequency_hz));
+    const int refractoryPeriod_us = qMax(0, period_us - stimActive_us);
+    // Fixed-train UI uses uA, while the low-level electrode parameters use nA.
+    const int amplitude_nA = amplitude_uA * 1000;
+
+    const bool resumeAfter = m_continuousRunning;
+    if (resumeAfter) {
+        emit logMessage("Fixed-stim train: updating stimulation parameters...");
+        pauseContinuousForStim();
+    }
+
+    ElectrodeParameters *ele =
+        new ElectrodeParameters(electrodeName.toStdString());
+
+    ele->SetStimulationTiming(0,
+                              phase_us,
+                              phase_us,
+                              refractoryPeriod_us);
+    ele->interphaseDelay = 0;
+    ele->refractoryPeriod = refractoryPeriod_us;
+    ele->pulseOrTrain = (pulses > 1) ? 1 : 0;
+    ele->pulseTrainPeriod = period_us;
+    ele->numOfPulses = pulses;
+    ele->SetStimulationAmplitude(amplitude_nA, amplitude_nA);
+    ele->SetStimulationSource(triggerSource);
+
+    m_stimController->setStimSequenceParameters(ele);
+    m_rhxController->setStimCmdMode(true);
+
+    m_stimController->stimTrigger(triggerSource, true);
+    m_stimController->stimTrigger(triggerSource, false);
+
+    emit logMessage(QStringLiteral("Fixed-stim train started: %1, amplitude=%2 uA, phase=%3 us, freq=%4 Hz, pulses=%5, trigger=%6")
+                        .arg(electrodeName)
+                        .arg(amplitude_uA)
+                        .arg(phase_us)
+                        .arg(frequency_hz, 0, 'f', 3)
+                        .arg(pulses)
+                        .arg(triggerSource));
+
+    if (resumeAfter) {
+        resumeContinuousAfterStim();
+    }
+}
 
 bool AcquisitionEngine::startBinaryRecording(const QString &filePath)
 {
@@ -639,4 +746,3 @@ void AcquisitionEngine::stopBinaryRecording()
 
     emit logMessage("录制已停止");
 }
-
