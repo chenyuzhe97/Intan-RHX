@@ -2478,16 +2478,14 @@ void MainWindow::onStop()
     if (m_experiment) m_experiment->stop();
     m_closedLoopExperimentActive = false;
 
-    // Stop acquisition first so no more blocks are produced while we are waiting for
-    // the managed recording worker to flush and join.
-    if (m_engine && wasAcquiring) {
-        m_engine->stopAcquisition();
-    }
     if (stopManagedRecording) {
         m_engine->stopBinaryRecording();
         if (m_stimLog) {
             m_stimLog->stop();
         }
+    }
+    if (m_engine && wasAcquiring) {
+        m_engine->stopAcquisition();
     }
     if (m_dockTimeline) m_dockTimeline->hide();
     else if (m_timeline) m_timeline->hide();
