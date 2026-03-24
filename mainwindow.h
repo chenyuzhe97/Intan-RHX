@@ -110,10 +110,14 @@ private:
     QString buildManualStimSummary() const;
     QString buildManualStimSignature() const;
     QString manualStimElectrodeName() const;
+    StimStepSize selectedStimStepSize() const;
+    bool ensureStimStepSizeAppliedForMode(const QString &modeLabel);
+    void updateFixedStimAmplitudeControl();
     bool configureManualStimHardware(QString *summary = nullptr);
 
     // ===== Closed-loop config (GUI) =====
     void setupElectrodeConfigDock();
+    void setupFixedStimDock();
     void loadElectrodeConfig();
     void saveElectrodeConfig() const;
     void loadSessionConfig();
@@ -237,7 +241,7 @@ private:
     QVector<StimEventRecord> m_managedStimEvents;
     quint64            m_voidStimReplayToken = 0;
     QString            m_activeFixedStimElectrode;
-    int                m_activeFixedStimAmp_uA = 0;
+    double             m_activeFixedStimAmp_uA = 0.0;
     int                m_activeFixedStimPhaseUs = 0;
     double             m_activeFixedStimFreqHz = 0.0;
     int                m_activeFixedStimTriggerSource = 0;
@@ -246,6 +250,7 @@ private:
 
     // ====== 普通采集刺激配置 ======
     QDockWidget *m_dockManualStim = nullptr;
+    QComboBox   *m_cmbStimStepSize = nullptr;
     QComboBox   *m_cmbManualStimPrefix = nullptr;
     QSpinBox    *m_spinManualStimElectrode = nullptr;
     QSpinBox    *m_spinManualTriggerSource = nullptr;
@@ -280,13 +285,14 @@ private:
 
     // ====== Closed-loop Config Dock (GUI widgets) ======
     QDockWidget *m_dockElectrode = nullptr;
+    QDockWidget *m_dockFixedStim = nullptr;
 
     QLineEdit *m_editSense_A_a = nullptr;
     QLineEdit *m_editSense_A_b = nullptr;
     QLineEdit *m_editSense_B_a = nullptr;
     QLineEdit *m_editSense_B_b = nullptr;
 
-    QSpinBox  *m_spinFixedStimAmp = nullptr;
+    QDoubleSpinBox *m_spinFixedStimAmp = nullptr;
     QSpinBox  *m_spinFixedStimPhaseUs = nullptr;
     QDoubleSpinBox *m_spinFixedStimFreqHz = nullptr;
 

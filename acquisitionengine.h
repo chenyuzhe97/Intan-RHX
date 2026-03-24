@@ -46,6 +46,9 @@ public:
     void shutdownDevice();
     bool isContinuousRunning() const { return m_continuousRunning; }
     bool isRecording() const { return m_isRecording; }
+    void setStimStepSize(StimStepSize stepSize);
+    StimStepSize stimStepSize() const { return m_stimStepSize; }
+    bool hasPendingStimStepSizeApply() const { return m_appliedStimStepSize != m_stimStepSize; }
 
     // 简单的刺激配置接口：把电极参数交给底层 Controller
     void configureStim(const QString &electrodeName,
@@ -66,11 +69,11 @@ public:
                           int numPulses,
                           int triggerSource);
     void applyFixedReplayStim(const QString &electrodeName,
-                              int amplitude_uA,
+                              double amplitude_uA,
                               int phase_us,
                               int triggerSource);
     void applyFixedTrainStim(const QString &electrodeName,
-                             int amplitude_uA,
+                             double amplitude_uA,
                              int phase_us,
                              double frequency_hz,
                              int duration_ms,
@@ -115,6 +118,7 @@ private:
     void cleanup();
     void processDataQueue();
     bool waitForStop(int timeoutMs);
+    bool applyStimStepSizeToHardware();
     void resetTimestampDiagnostics();
     void inspectTimestampBatch(const char *streamTag,
                                const QVector<uint32_t> &timeStamps,
@@ -133,6 +137,8 @@ private:
 private:
     RHXController   *m_rhxController   = nullptr;
     Controller      *m_stimController  = nullptr;
+    StimStepSize     m_stimStepSize = StimStepSize500nA;
+    StimStepSize     m_appliedStimStepSize = StimStepSizeUnrecognized;
 
     // ⭐ 使用 std::ofstream 直接写 Intan 原生二进制数据
     std::ofstream            m_recordStream;

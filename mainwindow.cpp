@@ -50,6 +50,15 @@ static StackedWaveWidget::FilterSettings buildFilterSettingsFromUi(
     return s;
 }
 
+static QString stimStepSizeDisplayText(StimStepSize step)
+{
+    const int idx = int(step);
+    if (idx >= 0 && idx <= int(StimStepSizeMax)) {
+        return StimStepSizeString[idx];
+    }
+    return QStringLiteral("500 nA step size");
+}
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
@@ -59,6 +68,7 @@ MainWindow::MainWindow(QWidget *parent)
     loadManualStimConfig();
 
     setupElectrodeConfigDock();
+    setupFixedStimDock();
     loadElectrodeConfig();
     loadSessionConfig();
 
@@ -343,6 +353,35 @@ void MainWindow::setupUi()
 
         row->addStretch(1);
         m_layout->addLayout(row);
+    }
+
+    // ===== 全局刺激量程 / 步进 =====
+    {
+        QHBoxLayout *row = new QHBoxLayout();
+
+        QLabel *label = new QLabel(QString::fromUtf8(u8"全局刺激量程 / 步进:"), this);
+        m_cmbStimStepSize = new QComboBox(this);
+        for (int step = int(StimStepSize10nA); step <= int(StimStepSize10uA); ++step) {
+            const StimStepSize stimStep = static_cast<StimStepSize>(step);
+            m_cmbStimStepSize->addItem(stimStepSizeDisplayText(stimStep), step);
+        }
+        m_cmbStimStepSize->setToolTip(QString::fromUtf8(u8"这是全局硬件刺激档位，普通采集、闭环、虚空刺激和固定刺激共用这一项。"));
+
+        row->addWidget(label);
+        row->addWidget(m_cmbStimStepSize);
+        row->addStretch(1);
+        m_layout->addLayout(row);
+
+        connect(m_cmbStimStepSize, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+                [this](int) {
+                    m_manualStimConfigApplied = false;
+                    m_manualStimConfigDirty = true;
+                    m_manualStimLoadedForCurrentRun = false;
+                    m_manualStimAppliedSummary.clear();
+                    m_manualStimAppliedSignature.clear();
+                    updateFixedStimAmplitudeControl();
+                    saveSessionConfig();
+                });
     }
 
     // ===== 显示范围（±uV）行 =====
@@ -865,6 +904,102 @@ QString MainWindow::manualStimElectrodeName() const
         .arg(m_spinManualStimElectrode->value());
 }
 
+StimStepSize MainWindow::selectedStimStepSize() const
+{
+    if (!m_cmbStimStepSize) {
+        return StimStepSize500nA;
+    }
+
+    bool ok = false;
+    const int rawValue = m_cmbStimStepSize->currentData().toInt(&ok);
+    if (!ok || rawValue < int(StimStepSize10nA) || rawValue > int(StimStepSize10uA)) {
+        return StimStepSize500nA;
+    }
+
+    return static_cast<StimStepSize>(rawValue);
+}
+
+bool MainWindow::ensureStimStepSizeAppliedForMode(const QString &modeLabel)
+{
+    if (!m_engine) {
+        return false;
+    }
+    if (!m_engine->rhx() || !m_engine->stimController()) {
+        return true;
+    }
+
+    const StimStepSize stepSize = selectedStimStepSize();
+    const bool wasRunning = m_engine->isContinuousRunning();
+
+    m_engine->setStimStepSize(stepSize);
+    if (!m_engine->hasPendingStimStepSizeApply()) {
+        return true;
+    }
+
+    if (wasRunning) {
+        appendLog(QStringLiteral("%1：刺激量程/步进已变更，正在重启采集以应用新档位").arg(modeLabel));
+        m_engine->stopAcquisition();
+    }
+
+    m_engine->setStimStepSize(stepSize);
+    if (m_engine->hasPendingStimStepSizeApply()) {
+        appendLog(QStringLiteral("%1：刺激量程/步进应用失败，请重新打开设备后再试").arg(modeLabel));
+        if (wasRunning) {
+            m_engine->startContinuousAcquisition();
+            if (m_engine->isContinuousRunning()) {
+                appendLog(QStringLiteral("%1：已恢复采集，但新的刺激步进尚未生效").arg(modeLabel));
+            }
+        }
+        return false;
+    }
+
+    if (wasRunning) {
+        m_engine->startContinuousAcquisition();
+        if (!m_engine->isContinuousRunning()) {
+            appendLog(QStringLiteral("%1：刺激量程/步进已更新，但采集恢复失败").arg(modeLabel));
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void MainWindow::updateFixedStimAmplitudeControl()
+{
+    if (!m_spinFixedStimAmp) {
+        return;
+    }
+
+    const double step_uA = RHXRegisters::stimStepSizeToDouble(selectedStimStepSize()) * 1.0e6;
+    const double safeStep_uA = (step_uA > 0.0) ? step_uA : 0.5;
+    const double maxAmp_uA = 255.0 * safeStep_uA;
+
+    int decimals = 0;
+    double scaledStep = safeStep_uA;
+    while (decimals < 3 && qAbs(scaledStep - qRound(scaledStep)) > 1.0e-9) {
+        scaledStep *= 10.0;
+        ++decimals;
+    }
+
+    const double currentValue = m_spinFixedStimAmp->value();
+    double snappedValue = qRound(currentValue / safeStep_uA) * safeStep_uA;
+    if (snappedValue < safeStep_uA) {
+        snappedValue = safeStep_uA;
+    }
+    if (snappedValue > maxAmp_uA) {
+        snappedValue = maxAmp_uA;
+    }
+
+    QSignalBlocker blocker(m_spinFixedStimAmp);
+    m_spinFixedStimAmp->setDecimals(decimals);
+    m_spinFixedStimAmp->setRange(safeStep_uA, maxAmp_uA);
+    m_spinFixedStimAmp->setSingleStep(safeStep_uA);
+    m_spinFixedStimAmp->setValue(snappedValue);
+    m_spinFixedStimAmp->setToolTip(QStringLiteral("当前全局刺激档位：%1，可设置范围 0 ~ %2 uA")
+                                       .arg(stimStepSizeDisplayText(selectedStimStepSize()))
+                                       .arg(maxAmp_uA, 0, 'f', decimals));
+}
+
 bool MainWindow::configureManualStimHardware(QString *summary)
 {
     const QString detail = buildManualStimSummary();
@@ -899,6 +1034,15 @@ bool MainWindow::configureManualStimHardware(QString *summary)
         m_engine->stopAcquisition();
     } else {
         appendLog(QStringLiteral("普通采集刺激配置：按官方流程下发刺激参数"));
+    }
+
+    m_engine->setStimStepSize(selectedStimStepSize());
+    if (m_engine->hasPendingStimStepSizeApply()) {
+        appendLog(QStringLiteral("普通采集刺激配置：未能应用刺激量程/步进，请重新打开设备后再试"));
+        if (resumeContinuous) {
+            m_engine->startContinuousAcquisition();
+        }
+        return false;
     }
 
     m_engine->configureStim(electrodeName,
@@ -988,10 +1132,11 @@ void MainWindow::setupElectrodeConfigDock()
 
     QGroupBox *gbFixedReplay = new QGroupBox(tr("固定刺激实验参数"), panel);
     QFormLayout *fixedReplayLayout = new QFormLayout(gbFixedReplay);
-    m_spinFixedStimAmp = new QSpinBox(gbFixedReplay);
-    m_spinFixedStimAmp->setRange(1, 5000);
-    m_spinFixedStimAmp->setSingleStep(5);
-    m_spinFixedStimAmp->setValue(20);
+    m_spinFixedStimAmp = new QDoubleSpinBox(gbFixedReplay);
+    m_spinFixedStimAmp->setDecimals(1);
+    m_spinFixedStimAmp->setRange(0.5, 127.5);
+    m_spinFixedStimAmp->setSingleStep(0.5);
+    m_spinFixedStimAmp->setValue(20.0);
     m_spinFixedStimAmp->setSuffix(" uA");
     m_spinFixedStimPhaseUs = new QSpinBox(gbFixedReplay);
     m_spinFixedStimPhaseUs->setRange(1, 20000);
@@ -1007,6 +1152,7 @@ void MainWindow::setupElectrodeConfigDock()
     fixedReplayLayout->addRow(QString::fromUtf8(u8"固定频率"), m_spinFixedStimFreqHz);
     fixedReplayLayout->addRow(tr("固定振幅"), m_spinFixedStimAmp);
     fixedReplayLayout->addRow(tr("固定相宽"), m_spinFixedStimPhaseUs);
+    updateFixedStimAmplitudeControl();
 
     QGroupBox *gbSense = new QGroupBox(tr("闭环感受通道 (UI 用 1-based)"), panel);
     QFormLayout *senseLayout = new QFormLayout(gbSense);
@@ -1087,6 +1233,72 @@ void MainWindow::setupElectrodeConfigDock()
     m_spinStim_B_b->setValue(parseSuffix(kStim_B_b, QChar('B'), 7));
 }
 
+void MainWindow::setupFixedStimDock()
+{
+    if (m_spinFixedStimAmp) {
+        QWidget *oldGroup = m_spinFixedStimAmp->parentWidget();
+        while (oldGroup && !qobject_cast<QGroupBox *>(oldGroup)) {
+            oldGroup = oldGroup->parentWidget();
+        }
+        if (oldGroup) {
+            oldGroup->hide();
+        }
+    }
+
+    m_dockFixedStim = new QDockWidget(tr("固定刺激实验配置"), this);
+    m_dockFixedStim->setObjectName("dockFixedStimConfig");
+    m_dockFixedStim->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
+
+    QWidget *panel = new QWidget(m_dockFixedStim);
+    QVBoxLayout *root = new QVBoxLayout(panel);
+
+    QGroupBox *gbFixedStim = new QGroupBox(tr("固定刺激实验参数"), panel);
+    QVBoxLayout *groupLayout = new QVBoxLayout(gbFixedStim);
+
+    QLabel *tip = new QLabel(tr("这一栏只影响固定刺激实验：在固定时间窗内按固定频率、固定振幅和固定相宽连续刺激。"), gbFixedStim);
+    tip->setWordWrap(true);
+    groupLayout->addWidget(tip);
+
+    QFormLayout *form = new QFormLayout();
+
+    m_spinFixedStimFreqHz = new QDoubleSpinBox(gbFixedStim);
+    m_spinFixedStimFreqHz->setRange(0.1, 1000.0);
+    m_spinFixedStimFreqHz->setDecimals(2);
+    m_spinFixedStimFreqHz->setSingleStep(0.5);
+    m_spinFixedStimFreqHz->setValue(10.0);
+    m_spinFixedStimFreqHz->setSuffix(" Hz");
+
+    m_spinFixedStimAmp = new QDoubleSpinBox(gbFixedStim);
+    m_spinFixedStimAmp->setDecimals(1);
+    m_spinFixedStimAmp->setRange(0.5, 127.5);
+    m_spinFixedStimAmp->setSingleStep(0.5);
+    m_spinFixedStimAmp->setValue(20.0);
+    m_spinFixedStimAmp->setSuffix(" uA");
+
+    m_spinFixedStimPhaseUs = new QSpinBox(gbFixedStim);
+    m_spinFixedStimPhaseUs->setRange(1, 20000);
+    m_spinFixedStimPhaseUs->setSingleStep(10);
+    m_spinFixedStimPhaseUs->setValue(500);
+    m_spinFixedStimPhaseUs->setSuffix(" us");
+
+    form->addRow(QString::fromUtf8(u8"固定频率"), m_spinFixedStimFreqHz);
+    form->addRow(tr("固定振幅"), m_spinFixedStimAmp);
+    form->addRow(tr("固定相宽"), m_spinFixedStimPhaseUs);
+    groupLayout->addLayout(form);
+
+    root->addWidget(gbFixedStim);
+    root->addStretch(1);
+
+    panel->setLayout(root);
+    m_dockFixedStim->setWidget(panel);
+    addDockWidget(Qt::RightDockWidgetArea, m_dockFixedStim);
+    if (m_dockElectrode) {
+        splitDockWidget(m_dockElectrode, m_dockFixedStim, Qt::Vertical);
+    }
+
+    updateFixedStimAmplitudeControl();
+}
+
 void MainWindow::loadElectrodeConfig()
 {
     if (!m_dockElectrode) return;
@@ -1107,7 +1319,7 @@ void MainWindow::loadElectrodeConfig()
         m_spinClosedLoopRounds->setValue(savedRounds);
     }
     if (m_spinFixedStimAmp) {
-        const int savedAmp = qMax(1, s.value("fixed_stim/amp_uA", m_spinFixedStimAmp->value()).toInt());
+        const double savedAmp = qMax(0.0, s.value("fixed_stim/amp_uA", m_spinFixedStimAmp->value()).toDouble());
         QSignalBlocker blocker(m_spinFixedStimAmp);
         m_spinFixedStimAmp->setValue(savedAmp);
     }
@@ -1193,6 +1405,14 @@ void MainWindow::loadSessionConfig()
 {
     QSettings s;
     m_sessionRootDir = s.value("session/root_dir", QString()).toString().trimmed();
+    if (m_cmbStimStepSize) {
+        const int savedStimStep =
+            s.value("session/stim_step_size",
+                    s.value("manual_stim/stim_step_size", int(StimStepSize500nA))).toInt();
+        const int comboIndex = qMax(0, m_cmbStimStepSize->findData(savedStimStep));
+        m_cmbStimStepSize->setCurrentIndex(comboIndex);
+    }
+    updateFixedStimAmplitudeControl();
     if (m_btnSelectSaveDir && !m_sessionRootDir.isEmpty()) {
         m_btnSelectSaveDir->setToolTip(m_sessionRootDir);
     }
@@ -1202,6 +1422,8 @@ void MainWindow::saveSessionConfig() const
 {
     QSettings s;
     s.setValue("session/root_dir", m_sessionRootDir);
+    s.setValue("session/stim_step_size",
+               m_cmbStimStepSize ? m_cmbStimStepSize->currentData().toInt() : int(StimStepSize500nA));
 }
 
 bool MainWindow::ensureSessionRootSelected()
@@ -1346,6 +1568,8 @@ bool MainWindow::writeStimPlanJson(qint64 durationMs) const
     root["epoch_sec"] = colletion_time;
     root["rounds_target"] = m_spinClosedLoopRounds ? m_spinClosedLoopRounds->value() : 1;
     root["rounds_completed"] = m_closedLoopCompletedRounds;
+    root["stim_step_size_enum"] = int(selectedStimStepSize());
+    root["stim_step_size"] = stimStepSizeDisplayText(selectedStimStepSize());
     root["recording_file"] = QFileInfo(m_activeRecordingPath).fileName();
     root["stim_log_file"] = QStringLiteral("stim_log.csv");
     root["events"] = events;
@@ -1375,7 +1599,7 @@ bool MainWindow::writeFixedStimSessionJson(qint64 durationMs) const
         obj["fired_time_ms"] = QString::number(ev.firedTimeMs);
         obj["time_ms"] = QString::number(ev.firedTimeMs >= 0 ? ev.firedTimeMs : ev.plannedTimeMs);
         obj["target_electrode"] = ev.electrode;
-        obj["amp_uA"] = ev.amp_uA;
+        obj["amp_uA"] = m_activeFixedStimAmp_uA;
         obj["phase_us"] = m_activeFixedStimPhaseUs;
         obj["frequency_hz"] = m_activeFixedStimFreqHz;
         obj["pulses"] = ev.pulses;
@@ -1405,6 +1629,8 @@ bool MainWindow::writeFixedStimSessionJson(qint64 durationMs) const
     root["stim_log_file"] = QStringLiteral("stim_log.csv");
     root["target_electrode"] = m_activeFixedStimElectrode;
     root["trigger_source"] = m_activeFixedStimTriggerSource;
+    root["stim_step_size_enum"] = int(selectedStimStepSize());
+    root["stim_step_size"] = stimStepSizeDisplayText(selectedStimStepSize());
     root["fixed_waveform"] = QStringLiteral("symmetric_biphasic");
     root["fixed_amplitude_uA"] = m_activeFixedStimAmp_uA;
     root["fixed_phase_us"] = m_activeFixedStimPhaseUs;
@@ -1571,6 +1797,9 @@ void MainWindow::onSelectRecordingLocation()
 
 void MainWindow::onOpenDevice()
 {
+    commitManualStimEdits();
+    saveManualStimConfig();
+
     QString path = QFileDialog::getOpenFileName(
         this,
         tr("选择 ConfigRHSController_7310.bit"),
@@ -1589,12 +1818,19 @@ void MainWindow::onOpenDevice()
     m_manualStimLoadedForCurrentRun = false;
     m_manualStimAppliedSummary.clear();
     m_manualStimAppliedSignature.clear();
+    ensureStimStepSizeAppliedForMode(QStringLiteral("打开设备"));
     appendLog("打开设备成功");
 }
 
 void MainWindow::onStart()
 {
     if (!m_engine) return;
+
+    commitManualStimEdits();
+    saveManualStimConfig();
+    if (!ensureStimStepSizeAppliedForMode(QStringLiteral("普通采集"))) {
+        return;
+    }
 
     const bool wasAcquiring = m_engine->isContinuousRunning();
     const bool wasClosedLoop = m_closedLoopExperimentActive;
@@ -1668,6 +1904,12 @@ void MainWindow::onStartClosedLoop()
     }
     if (!ensureSessionRootSelected()) {
         appendLog(QStringLiteral("Please select a session root folder first."));
+        return;
+    }
+
+    commitManualStimEdits();
+    saveManualStimConfig();
+    if (!ensureStimStepSizeAppliedForMode(QStringLiteral("闭环实验"))) {
         return;
     }
 
@@ -1871,6 +2113,12 @@ void MainWindow::onVoidStim()
                   return a.timeMs < b.timeMs;
               });
 
+    commitManualStimEdits();
+    saveManualStimConfig();
+    if (!ensureStimStepSizeAppliedForMode(QStringLiteral("虚空刺激"))) {
+        return;
+    }
+
     if (m_coordinator) {
         m_coordinator->cancelPendingStimPhase();
         m_coordinator->endRun();
@@ -1967,6 +2215,9 @@ void MainWindow::onFixedStimExperiment()
     saveManualStimConfig();
     saveElectrodeConfig();
     saveSessionConfig();
+    if (!ensureStimStepSizeAppliedForMode(QStringLiteral("固定刺激实验"))) {
+        return;
+    }
 
     constexpr qint64 kCollectPreMs = 60000;
     constexpr qint64 kStimWindowMs = 60000;
@@ -1976,7 +2227,7 @@ void MainWindow::onFixedStimExperiment()
 
     const QString electrodeName = manualStimElectrodeName();
     const int triggerSource = m_spinManualTriggerSource ? m_spinManualTriggerSource->value() : 0;
-    const int fixedAmp_uA = m_spinFixedStimAmp ? m_spinFixedStimAmp->value() : 20;
+    const double fixedAmp_uA = m_spinFixedStimAmp ? m_spinFixedStimAmp->value() : 20.0;
     const int fixedPhaseUs = m_spinFixedStimPhaseUs ? m_spinFixedStimPhaseUs->value() : 500;
     const double fixedFreqHz = m_spinFixedStimFreqHz ? m_spinFixedStimFreqHz->value() : 10.0;
     const int targetRounds = m_spinClosedLoopRounds ? m_spinClosedLoopRounds->value() : 1;
@@ -2057,14 +2308,14 @@ void MainWindow::onFixedStimExperiment()
         record.itemIndex = roundIndex;
         record.plannedTimeMs = stimStartMs;
         record.electrode = electrodeName;
-        record.amp_uA = fixedAmp_uA;
+        record.amp_uA = qRound(fixedAmp_uA);
         record.pulses = pulsesPerTrain;
         record.triggerSource = triggerSource;
         m_managedStimEvents.push_back(record);
 
         if (m_stimLog) {
             m_stimLog->logPlanned(-1, -1, roundIndex, double(stimStartMs),
-                                  electrodeName, fixedAmp_uA, pulsesPerTrain, -1, 0.0);
+                                  electrodeName, qRound(fixedAmp_uA), pulsesPerTrain, -1, 0.0);
         }
 
         QTimer::singleShot(int(stimStartMs), this,
@@ -2085,7 +2336,7 @@ void MainWindow::onFixedStimExperiment()
                                }
                                if (m_stimLog) {
                                    m_stimLog->logFired(-1, -1, roundIndex,
-                                                       electrodeName, fixedAmp_uA, pulsesPerTrain);
+                                                       electrodeName, qRound(fixedAmp_uA), pulsesPerTrain);
                                }
                                m_engine->applyFixedTrainStim(electrodeName,
                                                              fixedAmp_uA,
@@ -2104,7 +2355,7 @@ void MainWindow::onFixedStimExperiment()
 
     appendLog(QStringLiteral("Fixed-stim experiment started: target=%1, amplitude=%2 uA, phase=%3 us, frequency=%4 Hz, rounds=%5, duration=%6 ms, recording=%7")
                   .arg(electrodeName)
-                  .arg(fixedAmp_uA)
+                  .arg(fixedAmp_uA, 0, 'f', m_spinFixedStimAmp ? m_spinFixedStimAmp->decimals() : 1)
                   .arg(fixedPhaseUs)
                   .arg(fixedFreqHz, 0, 'f', 3)
                   .arg(targetRounds)

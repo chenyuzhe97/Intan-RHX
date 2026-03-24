@@ -29,6 +29,80 @@ bool AcquisitionEngine::waitForStop(int timeoutMs)
     return true;
 }
 
+void AcquisitionEngine::setStimStepSize(StimStepSize stepSize)
+{
+    if (stepSize == StimStepSizeUnrecognized) {
+        return;
+    }
+
+    m_stimStepSize = stepSize;
+    if (m_stimController) {
+        m_stimController->setStimStepSize(stepSize);
+    }
+
+    if (!m_deviceOpened || !m_rhxController) {
+        return;
+    }
+
+    if (!m_rhxController->isRunning()) {
+        applyStimStepSizeToHardware();
+    }
+}
+
+bool AcquisitionEngine::applyStimStepSizeToHardware()
+{
+    if (!m_deviceOpened || !m_rhxController) {
+        return false;
+    }
+    if (m_rhxController->isRunning()) {
+        return false;
+    }
+
+    RHXRegisters chipRegisters(m_rhxController->getType(),
+                               m_rhxController->getSampleRate(),
+                               m_stimStepSize);
+    std::vector<unsigned int> commandList;
+
+    int commandSequenceLength =
+        chipRegisters.createCommandListRHSRegisterConfig(commandList, true);
+    if (commandSequenceLength <= 0) {
+        return false;
+    }
+
+    m_rhxController->uploadCommandList(commandList, AbstractRHXController::AuxCmd1, 0);
+    m_rhxController->selectAuxCommandLength(AbstractRHXController::AuxCmd1, 0, commandSequenceLength - 1);
+
+    chipRegisters.createCommandListDummy(commandList, 8192,
+                                         chipRegisters.createRHXCommand(RHXRegisters::RHXCommandRegRead, 255));
+    m_rhxController->uploadCommandList(commandList, AbstractRHXController::AuxCmd2, 0);
+
+    chipRegisters.createCommandListDummy(commandList, 8192,
+                                         chipRegisters.createRHXCommand(RHXRegisters::RHXCommandRegRead, 254));
+    m_rhxController->uploadCommandList(commandList, AbstractRHXController::AuxCmd3, 0);
+
+    chipRegisters.createCommandListDummy(commandList, 8192,
+                                         chipRegisters.createRHXCommand(RHXRegisters::RHXCommandRegRead, 253));
+    m_rhxController->uploadCommandList(commandList, AbstractRHXController::AuxCmd4, 0);
+
+    m_rhxController->enableAuxCommandsOnAllStreams();
+    m_rhxController->setMaxTimeStep(RHXDataBlock::samplesPerDataBlock(m_rhxController->getType()));
+    m_rhxController->setContinuousRunMode(false);
+    m_rhxController->setStimCmdMode(false);
+    m_rhxController->run();
+
+    if (!waitForStop(1500)) {
+        emit logMessage(QStringLiteral("刺激量程/步进写入硬件超时"));
+        return false;
+    }
+
+    m_rhxController->flush();
+    m_rhxController->setMaxTimeStep(0);
+    m_appliedStimStepSize = m_stimStepSize;
+    emit logMessage(QStringLiteral("刺激量程/步进已应用到硬件：%1")
+                        .arg(StimStepSizeString[int(m_stimStepSize)]));
+    return true;
+}
+
 void AcquisitionEngine::resetTimestampDiagnostics()
 {
     m_tsDiagStream0 = TimestampDiagState();
@@ -210,6 +284,7 @@ void AcquisitionEngine::cleanup()
     m_usbTimer.stop();
     m_continuousRunning = false;
     m_isRecording = false;
+    m_appliedStimStepSize = StimStepSizeUnrecognized;
     stopRecordingWorker();
     if (m_recordStream.is_open()) {
         m_recordStream.close();
@@ -274,6 +349,7 @@ bool AcquisitionEngine::openDevice(const QString &bitfilePath)
 
     // 创建刺激控制器（完全照 main）
     m_stimController = new Controller(m_rhxController);
+    m_stimController->setStimStepSize(m_stimStepSize);
 
     // 记录流和通道数
     m_numEnabledStreams =
@@ -282,6 +358,9 @@ bool AcquisitionEngine::openDevice(const QString &bitfilePath)
         RHXDataBlock::channelsPerStream(m_rhxController->getType());
 
     m_deviceOpened = true;
+    if (!applyStimStepSizeToHardware()) {
+        emit logMessage(QStringLiteral("警告：设备打开后未能立即应用刺激量程/步进"));
+    }
     resetTimestampDiagnostics();
     emit logMessage("设备打开并初始化成功");
     return true;
@@ -300,6 +379,14 @@ void AcquisitionEngine::startContinuousAcquisition()
 {
     if (!m_deviceOpened) {
         emit errorOccurred("请先打开设备");
+        return;
+    }
+
+    if (m_stimController) {
+        m_stimController->setStimStepSize(m_stimStepSize);
+    }
+    if (hasPendingStimStepSizeApply() && !applyStimStepSizeToHardware()) {
+        emit errorOccurred(QStringLiteral("无法应用刺激量程/步进，请重新打开设备后再试"));
         return;
     }
 
@@ -598,12 +685,12 @@ void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
 }
 
 void AcquisitionEngine::applyFixedReplayStim(const QString &electrodeName,
-                                             int amplitude_uA,
+                                             double amplitude_uA,
                                              int phase_us,
                                              int triggerSource)
 {
     if (!m_deviceOpened || !m_stimController) return;
-    if (amplitude_uA <= 0 || phase_us <= 0) return;
+    if (amplitude_uA <= 0.0 || phase_us <= 0) return;
 
     const bool resumeAfter = m_continuousRunning;
     if (resumeAfter) {
@@ -612,7 +699,7 @@ void AcquisitionEngine::applyFixedReplayStim(const QString &electrodeName,
     }
 
     // Fixed replay UI uses uA, while configureStim() expects nA.
-    const int amplitude_nA = amplitude_uA * 1000;
+    const int amplitude_nA = qMax(1, qRound(amplitude_uA * 1000.0));
 
     configureStim(electrodeName,
                   amplitude_nA,
@@ -628,7 +715,7 @@ void AcquisitionEngine::applyFixedReplayStim(const QString &electrodeName,
 
     emit logMessage(QStringLiteral("固定刺激回放：%1, 幅度=%2 uA, 相宽=%3 us, trigger=%4")
                         .arg(electrodeName)
-                        .arg(amplitude_uA)
+                        .arg(amplitude_uA, 0, 'f', 3)
                         .arg(phase_us)
                         .arg(triggerSource));
 
@@ -640,14 +727,14 @@ void AcquisitionEngine::applyFixedReplayStim(const QString &electrodeName,
 // ====== 录制控制 ======
 
 void AcquisitionEngine::applyFixedTrainStim(const QString &electrodeName,
-                                            int amplitude_uA,
+                                            double amplitude_uA,
                                             int phase_us,
                                             double frequency_hz,
                                             int duration_ms,
                                             int triggerSource)
 {
     if (!m_deviceOpened || !m_stimController) return;
-    if (amplitude_uA <= 0 || phase_us <= 0 || frequency_hz <= 0.0 || duration_ms <= 0) return;
+    if (amplitude_uA <= 0.0 || phase_us <= 0 || frequency_hz <= 0.0 || duration_ms <= 0) return;
 
     const int period_us = qMax(1, qRound(1000000.0 / frequency_hz));
     const int stimActive_us = phase_us * 2;
@@ -661,7 +748,7 @@ void AcquisitionEngine::applyFixedTrainStim(const QString &electrodeName,
     const int pulses = qMax(1, qRound((duration_ms / 1000.0) * frequency_hz));
     const int refractoryPeriod_us = qMax(0, period_us - stimActive_us);
     // Fixed-train UI uses uA, while the low-level electrode parameters use nA.
-    const int amplitude_nA = amplitude_uA * 1000;
+    const int amplitude_nA = qMax(1, qRound(amplitude_uA * 1000.0));
 
     const bool resumeAfter = m_continuousRunning;
     if (resumeAfter) {
@@ -692,7 +779,7 @@ void AcquisitionEngine::applyFixedTrainStim(const QString &electrodeName,
 
     emit logMessage(QStringLiteral("Fixed-stim train started: %1, amplitude=%2 uA, phase=%3 us, freq=%4 Hz, pulses=%5, trigger=%6")
                         .arg(electrodeName)
-                        .arg(amplitude_uA)
+                        .arg(amplitude_uA, 0, 'f', 3)
                         .arg(phase_us)
                         .arg(frequency_hz, 0, 'f', 3)
                         .arg(pulses)

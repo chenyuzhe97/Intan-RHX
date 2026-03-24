@@ -13,6 +13,8 @@ class Controller
 {
 public:
     Controller(AbstractRHXController* rhxController_);
+    void setStimStepSize(StimStepSize stepSize);
+    StimStepSize stimStepSize() const { return m_stimStepSize; }
 
     // 设置对应通道刺激电极的参数
     void setChannel(ElectrodeParameters* ampParameters);
@@ -26,6 +28,7 @@ public:
 
 public:
     AbstractRHXController* rhxController;
+    StimStepSize m_stimStepSize = StimStepSize500nA;
 
 };
 

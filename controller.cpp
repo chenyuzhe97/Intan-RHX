@@ -2,6 +2,11 @@
 
 Controller::Controller(AbstractRHXController* rhxController_):rhxController(rhxController_){}
 
+void Controller::setStimStepSize(StimStepSize stepSize)
+{
+    m_stimStepSize = stepSize;
+}
+
 void Controller::setStimSequenceParameters(ElectrodeParameters *parameters)
 {
     if (rhxController->isSynthetic() || rhxController->isPlayback()) return;
@@ -16,7 +21,10 @@ void Controller::setStimSequenceParameters(ElectrodeParameters *parameters)
     qDebug()<<"当前触发通道为：" << channel;
     qDebug()<<"当前触发流为:" << stream;
     double timestep    = 33.3333;
-    double currentstep = 0.5;
+    double currentstep = RHXRegisters::stimStepSizeToDouble(m_stimStepSize) * 1.0e6;
+    if (!(currentstep > 0.0)) {
+        currentstep = 0.5;
+    }
     int numOfPulses    = parameters->numOfPulses;
 
     // ==== 1) 配置触发源 & 脉冲数（这部分无论是否在跑都可以做） ====
@@ -148,7 +156,7 @@ void Controller::setStimSequenceParameters(ElectrodeParameters *parameters)
 
     // ==== 4) 设置幅度，生成并上传 Aux 命令序列（运行中也 OK） ====
     RHXRegisters chipRegisters(rhxController->getType(),
-                               rhxController->getSampleRate(),StimStepSize500nA);
+                               rhxController->getSampleRate(), m_stimStepSize);
     int commandSequenceLength;
     std::vector<unsigned int> commandList;
 
