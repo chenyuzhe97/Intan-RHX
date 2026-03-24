@@ -176,6 +176,7 @@ private:
 
     QDoubleSpinBox *m_spinEpochSec = nullptr;
     QSpinBox       *m_spinClosedLoopRounds = nullptr;
+    QSpinBox       *m_spinClosedLoopMaxStimPerEpoch = nullptr;
 
     // ===== view gain =====
     QDoubleSpinBox *m_spinGainA = nullptr;   // ±uV
@@ -229,6 +230,7 @@ private:
     // 拼写保留
     double colletion_time = 60.0;
     int    m_closedLoopCompletedRounds = 0;
+    int    m_closedLoopMaxStimPerEpoch = 10;
 
     QString            m_sessionRootDir;
     QString            m_activeSessionDir;
@@ -247,6 +249,10 @@ private:
     int                m_activeFixedStimTriggerSource = 0;
     int                m_activeFixedStimRounds = 0;
     int                m_activeFixedStimPulsesPerTrain = 0;
+    qint64             m_activeFixedStimCollectPreMs = 60000;
+    qint64             m_activeFixedStimWindowMs = 60000;
+    qint64             m_activeFixedStimCollectPostMs = 60000;
+    qint64             m_activeFixedStimIdleMs = 60000;
 
     // ====== 普通采集刺激配置 ======
     QDockWidget *m_dockManualStim = nullptr;
@@ -295,6 +301,10 @@ private:
     QDoubleSpinBox *m_spinFixedStimAmp = nullptr;
     QSpinBox  *m_spinFixedStimPhaseUs = nullptr;
     QDoubleSpinBox *m_spinFixedStimFreqHz = nullptr;
+    QDoubleSpinBox *m_spinFixedStimCollectPreSec = nullptr;
+    QDoubleSpinBox *m_spinFixedStimWindowSec = nullptr;
+    QDoubleSpinBox *m_spinFixedStimCollectPostSec = nullptr;
+    QDoubleSpinBox *m_spinFixedStimIdleSec = nullptr;
 
     QSpinBox  *m_spinStim_A_a = nullptr;
     QSpinBox  *m_spinStim_A_b = nullptr;

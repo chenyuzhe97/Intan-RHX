@@ -50,6 +50,11 @@ void ABExperimentCoordinator::setEpochDurationSec(double epochDurationSec)
     }
 }
 
+void ABExperimentCoordinator::setMaxStimPerEpoch(int maxStimPerEpoch)
+{
+    m_maxStimPerEpoch = qMax(1, maxStimPerEpoch);
+}
+
 void ABExperimentCoordinator::setRoutingConfig(const RoutingConfig &config)
 {
     m_config = config;
@@ -192,8 +197,7 @@ void ABExperimentCoordinator::handleEpochReady(int phaseIndex,
               [](const ABAlgorithm::Result &a, const ABAlgorithm::Result &b) {
                   return a.spikeAmplitude_uV > b.spikeAmplitude_uV;
               });
-    const int maxStimPerEpoch = 10;
-    if (candidates.size() > maxStimPerEpoch) candidates.resize(maxStimPerEpoch);
+    if (candidates.size() > m_maxStimPerEpoch) candidates.resize(m_maxStimPerEpoch);
 
     std::sort(candidates.begin(), candidates.end(),
               [](const ABAlgorithm::Result &a, const ABAlgorithm::Result &b) {

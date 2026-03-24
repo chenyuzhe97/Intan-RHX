@@ -36,6 +36,7 @@ public:
     void setStimLogWriter(StimLogWriter *stimLog);
     void setSampleRateHz(double sampleRateHz);
     void setEpochDurationSec(double epochDurationSec);
+    void setMaxStimPerEpoch(int maxStimPerEpoch);
     void setRoutingConfig(const RoutingConfig &config);
     void beginRun();
     void endRun();
@@ -86,6 +87,7 @@ private:
     int     m_epochCounter = 0;
     double  m_sampleRateHz = 30000.0;
     double  m_epochDurationSec = 5.0;
+    int     m_maxStimPerEpoch = 10;
     quint64 m_scheduleToken = 0;
     QElapsedTimer m_runClock;
     bool    m_runClockActive = false;
