@@ -2469,6 +2469,11 @@ void MainWindow::onStop()
     const bool wasAcquiring = m_engine && m_engine->isContinuousRunning();
     const bool hadManagedSession = (m_managedSessionMode != ManagedSessionMode::None);
     const bool stopManagedRecording = m_engine && m_engine->isRecording() && hadManagedSession;
+    const bool keepContinuousAcquisition =
+        (modeBeforeStop == ManagedSessionMode::ClosedLoop) ||
+        (modeBeforeStop == ManagedSessionMode::VoidStim) ||
+        (modeBeforeStop == ManagedSessionMode::FixedStim) ||
+        wasClosedLoop || wasVoidStim;
 
     stopVoidStimReplay(false);
     if (m_coordinator) {
@@ -2484,7 +2489,7 @@ void MainWindow::onStop()
             m_stimLog->stop();
         }
     }
-    if (m_engine && wasAcquiring) {
+    if (m_engine && wasAcquiring && !keepContinuousAcquisition) {
         m_engine->stopAcquisition();
     }
     if (m_dockTimeline) m_dockTimeline->hide();
@@ -2492,15 +2497,15 @@ void MainWindow::onStop()
 
     finalizeManagedSession();
     if (modeBeforeStop == ManagedSessionMode::ClosedLoop || wasClosedLoop) {
-        appendLog(QStringLiteral("Closed-loop experiment stopped."));
+        appendLog(QStringLiteral("Closed-loop experiment stopped; continuous acquisition remains running."));
         return;
     }
     if (modeBeforeStop == ManagedSessionMode::FixedStim) {
-        appendLog(QStringLiteral("Fixed-stim experiment stopped."));
+        appendLog(QStringLiteral("Fixed-stim experiment stopped; continuous acquisition remains running."));
         return;
     }
     if (modeBeforeStop == ManagedSessionMode::VoidStim || wasVoidStim) {
-        appendLog(QStringLiteral("Virtual stimulation stopped."));
+        appendLog(QStringLiteral("Virtual stimulation stopped; continuous acquisition remains running."));
         return;
     }
     if (wasAcquiring) {
@@ -2706,7 +2711,7 @@ void MainWindow::onClosedLoopRoundCompleted(int completedRounds, int targetRound
 void MainWindow::onClosedLoopExperimentCompleted(int completedRounds)
 {
     m_closedLoopCompletedRounds = completedRounds;
-    appendLog(QStringLiteral("Closed-loop experiment completed after %1 round(s); stopping recording and acquisition.")
+    appendLog(QStringLiteral("Closed-loop experiment completed after %1 round(s); stopping managed recording and returning to continuous acquisition.")
                   .arg(completedRounds));
 
     QTimer::singleShot(0, this, [this]() { onStop(); });
@@ -2715,14 +2720,14 @@ void MainWindow::onClosedLoopExperimentCompleted(int completedRounds)
 void MainWindow::onVoidStimReplayCompleted()
 {
     if (!m_voidStimActive) return;
-    appendLog(QStringLiteral("Virtual stimulation replay completed; stopping recording and acquisition."));
+    appendLog(QStringLiteral("Virtual stimulation replay completed; stopping managed recording and returning to continuous acquisition."));
     QTimer::singleShot(0, this, [this]() { onStop(); });
 }
 
 void MainWindow::onFixedStimReplayCompleted()
 {
     if (!m_voidStimActive) return;
-    appendLog(QStringLiteral("Fixed-stim experiment completed; stopping recording and acquisition."));
+    appendLog(QStringLiteral("Fixed-stim experiment completed; stopping managed recording and returning to continuous acquisition."));
     QTimer::singleShot(0, this, [this]() { onStop(); });
 }
 
