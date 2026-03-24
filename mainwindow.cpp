@@ -2154,6 +2154,7 @@ void MainWindow::onVoidStim()
 
     struct ReplayEvent {
         int itemIndex = -1;
+        int displayIndex = -1;
         qint64 timeMs = 0;
         QString electrode;
         int amp_uA = 0;
@@ -2202,6 +2203,9 @@ void MainWindow::onVoidStim()
               [](const ReplayEvent &a, const ReplayEvent &b) {
                   return a.timeMs < b.timeMs;
               });
+    for (int i = 0; i < replayEvents.size(); ++i) {
+        replayEvents[i].displayIndex = i;
+    }
 
     commitManualStimEdits();
     saveManualStimConfig();
@@ -2249,6 +2253,29 @@ void MainWindow::onVoidStim()
     m_voidStimActive = true;
     m_closedLoopExperimentActive = false;
 
+    if (m_timeline) {
+        QVector<StimTimelineOverlay::Item> items;
+        items.reserve(replayEvents.size());
+        for (const ReplayEvent &event : replayEvents) {
+            StimTimelineOverlay::Item item;
+            item.itemIndex = event.displayIndex;
+            item.offsetMs = double(event.timeMs);
+            item.amp_uA = event.amp_uA;
+            item.pulses = event.pulses;
+            item.ch = -1;
+            item.spike_uV = 0.0;
+            item.electrode = event.electrode;
+            item.fired = false;
+            items.push_back(item);
+        }
+        m_timeline->setPlanView(QStringLiteral("虚空刺激  A驱动回放  events=%1  dur=%2s")
+                                    .arg(items.size())
+                                    .arg(double(experimentDurationMs) / 1000.0, 0, 'f', 2),
+                                double(experimentDurationMs) / 1000.0,
+                                items);
+        ensureTimelineVisible();
+    }
+
     const quint64 replayToken = ++m_voidStimReplayToken;
     for (const ReplayEvent &event : replayEvents) {
         if (m_stimLog) {
@@ -2261,6 +2288,9 @@ void MainWindow::onVoidStim()
                            [this, replayToken, event]() {
                                if (replayToken != m_voidStimReplayToken || !m_voidStimActive) return;
                                if (!m_engine) return;
+                               if (m_timeline) {
+                                   m_timeline->markFired(0, event.displayIndex);
+                               }
                                if (m_stimLog) {
                                    m_stimLog->logFired(0, 0, event.itemIndex,
                                                        event.electrode, event.amp_uA, event.pulses);

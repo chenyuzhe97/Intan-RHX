@@ -1,6 +1,7 @@
 #pragma once
 #include <QWidget>
 #include <QVector>
+#include <QString>
 
 class StimTimelineOverlay : public QWidget
 {
@@ -21,6 +22,8 @@ public:
 
     void setEpochPlan(int epochId, int phaseIndex, double epochSec,
                       const QVector<Item> &items);
+    void setPlanView(const QString &headerText, double durationSec,
+                     const QVector<Item> &items);
     void setEpochSec(double epochSec);
 
     void markFired(int epochId, int itemIndex);
@@ -32,5 +35,6 @@ private:
     int m_epochId = 0;
     int m_phaseIndex = 0;
     double m_epochSec = 5.0;
+    QString m_headerText;
     QVector<Item> m_items;
 };

@@ -17,6 +17,21 @@ void StimTimelineOverlay::setEpochPlan(int epochId, int phaseIndex, double epoch
     m_epochId = epochId;
     m_phaseIndex = phaseIndex;
     m_epochSec = qMax(0.1, epochSec);
+    m_headerText = QString("epoch=%1  phase=%2  dur=%3s")
+                       .arg(m_epochId)
+                       .arg(m_phaseIndex)
+                       .arg(m_epochSec, 0, 'f', 2);
+    m_items = items;
+    update();
+}
+
+void StimTimelineOverlay::setPlanView(const QString &headerText, double durationSec,
+                                      const QVector<Item> &items)
+{
+    m_epochId = 0;
+    m_phaseIndex = 0;
+    m_epochSec = qMax(0.1, durationSec);
+    m_headerText = headerText;
     m_items = items;
     update();
 }
@@ -49,8 +64,11 @@ void StimTimelineOverlay::paintEvent(QPaintEvent*)
     const int padL=40, padR=12, padT=28, padB=22;
 
     p.setPen(QColor(230,230,230));
-    p.drawText(8, 18, QString("epoch=%1  phase=%2  dur=%3s")
-                          .arg(m_epochId).arg(m_phaseIndex).arg(m_epochSec,0,'f',2));
+    const QString header = m_headerText.isEmpty()
+        ? QString("epoch=%1  phase=%2  dur=%3s")
+              .arg(m_epochId).arg(m_phaseIndex).arg(m_epochSec, 0, 'f', 2)
+        : m_headerText;
+    p.drawText(8, 18, header);
 
     const int x0 = padL;
     const int x1 = W - padR;
