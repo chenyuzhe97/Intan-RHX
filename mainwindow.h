@@ -301,6 +301,7 @@ private:
     QDoubleSpinBox *m_spinFixedStimAmp = nullptr;
     QSpinBox  *m_spinFixedStimPhaseUs = nullptr;
     QDoubleSpinBox *m_spinFixedStimFreqHz = nullptr;
+    QSpinBox  *m_spinFixedStimRounds = nullptr;
     QDoubleSpinBox *m_spinFixedStimCollectPreSec = nullptr;
     QDoubleSpinBox *m_spinFixedStimWindowSec = nullptr;
     QDoubleSpinBox *m_spinFixedStimCollectPostSec = nullptr;

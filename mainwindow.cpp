@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGridLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -15,6 +16,7 @@
 #include <QLineEdit>
 #include <QSpinBox>
 #include <QMessageBox>
+#include <QMenuBar>
 #include <QRegularExpression>
 #include <QTextDocument>
 #include <QSignalBlocker>
@@ -129,6 +131,26 @@ MainWindow::MainWindow(QWidget *parent)
     }
     m_dockTimeline->hide();
 
+    menuBar()->setNativeMenuBar(false);
+    QMenu *viewMenu = menuBar()->addMenu(QString::fromUtf8(u8"视图"));
+    QMenu *panelMenu = menuBar()->addMenu(QString::fromUtf8(u8"面板"));
+    auto addDockToggle = [](QMenu *menu, QDockWidget *dock, const QString &title) {
+        if (!menu || !dock) return;
+        QAction *action = dock->toggleViewAction();
+        action->setText(title);
+        menu->addAction(action);
+    };
+    addDockToggle(panelMenu, m_dockManualStim, QString::fromUtf8(u8"普通采集刺激配置"));
+    addDockToggle(panelMenu, m_dockElectrode, QString::fromUtf8(u8"闭环实验配置"));
+    addDockToggle(panelMenu, m_dockFixedStim, QString::fromUtf8(u8"固定刺激实验配置"));
+    addDockToggle(viewMenu, m_dockTimeline, QString::fromUtf8(u8"刺激时序图"));
+    QAction *fftAction = viewMenu->addAction(QString::fromUtf8(u8"FFT 窗口"));
+    connect(fftAction, &QAction::triggered, this, &MainWindow::onToggleFftWindows);
+
+    if (m_dockManualStim) m_dockManualStim->hide();
+    if (m_dockElectrode) m_dockElectrode->show();
+    if (m_dockFixedStim) m_dockFixedStim->show();
+
     m_stimLog = new StimLogWriter(this);
     m_stimLog->start(QDir::currentPath() + "/stim_log.csv");
 
@@ -221,12 +243,47 @@ void MainWindow::setupUi()
         QLabel {
             color: #c8d6de;
         }
+        QMenuBar {
+            background: #0d151b;
+            border: 1px solid #223542;
+            border-radius: 10px;
+            padding: 4px 6px;
+            spacing: 6px;
+        }
+        QMenuBar::item {
+            padding: 6px 12px;
+            border-radius: 7px;
+            background: transparent;
+        }
+        QMenuBar::item:selected {
+            background: #17303a;
+            color: #f3f7f9;
+        }
         QPushButton {
             background: #16232d;
             border: 1px solid #29404f;
             border-radius: 8px;
             padding: 8px 14px;
             min-height: 18px;
+        }
+        QPushButton[variant="experiment"] {
+            background: #15313a;
+            border-color: #2a6c73;
+            color: #eff9fb;
+            font-weight: 600;
+            min-height: 26px;
+        }
+        QPushButton[variant="experiment"]:hover {
+            background: #1b414b;
+            border-color: #54d4c0;
+        }
+        QPushButton[variant="danger"] {
+            background: #2a1820;
+            border-color: #744753;
+        }
+        QPushButton[variant="danger"]:hover {
+            background: #38202a;
+            border-color: #d48b9f;
         }
         QPushButton:hover {
             background: #1c2d39;
@@ -270,6 +327,23 @@ void MainWindow::setupUi()
             background: #111b24;
             padding: 8px 12px;
             border-bottom: 1px solid #223542;
+        }
+        QWidget#controlDeck {
+            background: #0d151c;
+            border: 1px solid #213440;
+            border-radius: 16px;
+        }
+        QLabel#deckTitle {
+            color: #f0f7fa;
+            font-size: 18px;
+            font-weight: 700;
+        }
+        QLabel#deckSubtitle {
+            color: #88a6b1;
+            font-size: 12px;
+        }
+        QGroupBox#controlCard {
+            background: #101921;
         }
         QSplitter::handle {
             background: #11202a;
@@ -323,54 +397,80 @@ void MainWindow::setupUi()
     m_layout->setContentsMargins(16, 16, 16, 16);
     m_layout->setSpacing(12);
 
-    // ===== 顶部按钮行 =====
+    // ===== 顶部控制台 =====
     {
-        QHBoxLayout *row = new QHBoxLayout();
+        QWidget *controlDeck = new QWidget(this);
+        controlDeck->setObjectName("controlDeck");
+        QVBoxLayout *deckLayout = new QVBoxLayout(controlDeck);
+        deckLayout->setContentsMargins(14, 14, 14, 14);
+        deckLayout->setSpacing(12);
+
+        QLabel *deckTitle = new QLabel(QString::fromUtf8(u8"实验控制台"), controlDeck);
+        deckTitle->setObjectName("deckTitle");
+        deckLayout->addWidget(deckTitle);
+
+        QGridLayout *cards = new QGridLayout();
+        cards->setHorizontalSpacing(12);
+        cards->setVerticalSpacing(12);
 
         m_btnSelectSaveDir   = new QPushButton(QString::fromUtf8(u8"选择录制位置"), this);
-        m_btnVoidStim        = new QPushButton(QString::fromUtf8(u8"虚空刺激"), this);
-        m_btnFixedStim       = new QPushButton(QString::fromUtf8(u8"固定刺激实验"), this);
+        m_btnVoidStim        = new QPushButton(QString::fromUtf8(u8"实验三：虚空刺激"), this);
+        m_btnFixedStim       = new QPushButton(QString::fromUtf8(u8"实验二：固定刺激实验"), this);
 
         m_btnOpen            = new QPushButton(tr("打开设备"), this);
         m_btnStart           = new QPushButton(tr("普通采集"), this);
-        m_btnStartClosedLoop = new QPushButton(tr("闭环实验采集"), this);
+        m_btnStartClosedLoop = new QPushButton(QString::fromUtf8(u8"实验一：闭环实验采集"), this);
         m_btnStop            = new QPushButton(tr("停止采集"), this);
         m_btnRecStart        = new QPushButton(tr("开始录制(bin)"), this);
         m_btnRecStop         = new QPushButton(tr("停止录制"), this);
         m_btnShowAllChannels = new QPushButton(tr("显示全部通道"), this);
         m_btnShowAllChannels->setToolTip(tr("恢复 A/B 两边所有被隐藏的通道。"));
 
-        row->addWidget(m_btnOpen);
-        row->addWidget(m_btnSelectSaveDir);
-        row->addWidget(m_btnStart);
-        row->addWidget(m_btnStartClosedLoop);
-        row->addWidget(m_btnVoidStim);
-        row->addWidget(m_btnFixedStim);
-        row->addWidget(m_btnStop);
-        row->addWidget(m_btnRecStart);
-        row->addWidget(m_btnRecStop);
-        row->addWidget(m_btnShowAllChannels);
+        m_btnStartClosedLoop->setProperty("variant", "experiment");
+        m_btnFixedStim->setProperty("variant", "experiment");
+        m_btnVoidStim->setProperty("variant", "experiment");
+        m_btnStop->setProperty("variant", "danger");
 
-        row->addStretch(1);
-        m_layout->addLayout(row);
-    }
+        QGroupBox *experimentCard = new QGroupBox(QString::fromUtf8(u8"实验流程"), controlDeck);
+        experimentCard->setObjectName("controlCard");
+        QGridLayout *experimentLayout = new QGridLayout(experimentCard);
+        experimentLayout->setHorizontalSpacing(8);
+        experimentLayout->setVerticalSpacing(8);
+        experimentLayout->addWidget(m_btnSelectSaveDir, 0, 0, 1, 3);
+        experimentLayout->addWidget(m_btnStartClosedLoop, 1, 0);
+        experimentLayout->addWidget(m_btnFixedStim, 1, 1);
+        experimentLayout->addWidget(m_btnVoidStim, 1, 2);
 
-    // ===== 全局刺激量程 / 步进 =====
-    {
-        QHBoxLayout *row = new QHBoxLayout();
+        QGroupBox *acquisitionCard = new QGroupBox(QString::fromUtf8(u8"采集控制"), controlDeck);
+        acquisitionCard->setObjectName("controlCard");
+        QHBoxLayout *acquisitionLayout = new QHBoxLayout(acquisitionCard);
+        acquisitionLayout->setSpacing(8);
+        acquisitionLayout->addWidget(m_btnOpen);
+        acquisitionLayout->addWidget(m_btnStart);
+        acquisitionLayout->addWidget(m_btnStop);
 
-        QLabel *label = new QLabel(QString::fromUtf8(u8"全局刺激量程 / 步进:"), this);
-        m_cmbStimStepSize = new QComboBox(this);
+        QGroupBox *recordingCard = new QGroupBox(QString::fromUtf8(u8"录制与显示"), controlDeck);
+        recordingCard->setObjectName("controlCard");
+        QHBoxLayout *recordingLayout = new QHBoxLayout(recordingCard);
+        recordingLayout->setSpacing(8);
+        recordingLayout->addWidget(m_btnRecStart);
+        recordingLayout->addWidget(m_btnRecStop);
+        recordingLayout->addWidget(m_btnShowAllChannels);
+
+        QGroupBox *hardwareCard = new QGroupBox(QString::fromUtf8(u8"刺激硬件"), controlDeck);
+        hardwareCard->setObjectName("controlCard");
+        QHBoxLayout *hardwareLayout = new QHBoxLayout(hardwareCard);
+        hardwareLayout->setSpacing(8);
+        QLabel *label = new QLabel(QString::fromUtf8(u8"全局刺激量程 / 步进"), hardwareCard);
+        m_cmbStimStepSize = new QComboBox(hardwareCard);
         for (int step = int(StimStepSize10nA); step <= int(StimStepSize10uA); ++step) {
             const StimStepSize stimStep = static_cast<StimStepSize>(step);
             m_cmbStimStepSize->addItem(stimStepSizeDisplayText(stimStep), step);
         }
         m_cmbStimStepSize->setToolTip(QString::fromUtf8(u8"这是全局硬件刺激档位，普通采集、闭环、虚空刺激和固定刺激共用这一项。"));
 
-        row->addWidget(label);
-        row->addWidget(m_cmbStimStepSize);
-        row->addStretch(1);
-        m_layout->addLayout(row);
+        hardwareLayout->addWidget(label);
+        hardwareLayout->addWidget(m_cmbStimStepSize, 1);
 
         connect(m_cmbStimStepSize, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
                 [this](int) {
@@ -382,6 +482,18 @@ void MainWindow::setupUi()
                     updateFixedStimAmplitudeControl();
                     saveSessionConfig();
                 });
+
+        cards->addWidget(experimentCard, 0, 0, 2, 2);
+        cards->addWidget(acquisitionCard, 0, 2);
+        cards->addWidget(recordingCard, 1, 2);
+        cards->addWidget(hardwareCard, 0, 3, 2, 1);
+        cards->setColumnStretch(0, 2);
+        cards->setColumnStretch(1, 2);
+        cards->setColumnStretch(2, 2);
+        cards->setColumnStretch(3, 2);
+
+        deckLayout->addLayout(cards);
+        m_layout->addWidget(controlDeck);
     }
 
     // ===== 显示范围（±uV）行 =====
@@ -1273,6 +1385,11 @@ void MainWindow::setupFixedStimDock()
     m_spinFixedStimFreqHz->setValue(10.0);
     m_spinFixedStimFreqHz->setSuffix(" Hz");
 
+    m_spinFixedStimRounds = new QSpinBox(gbFixedStim);
+    m_spinFixedStimRounds->setRange(1, 100000);
+    m_spinFixedStimRounds->setSingleStep(1);
+    m_spinFixedStimRounds->setValue(1);
+
     m_spinFixedStimAmp = new QDoubleSpinBox(gbFixedStim);
     m_spinFixedStimAmp->setDecimals(1);
     m_spinFixedStimAmp->setRange(0.5, 127.5);
@@ -1314,6 +1431,7 @@ void MainWindow::setupFixedStimDock()
     m_spinFixedStimIdleSec->setValue(60.0);
     m_spinFixedStimIdleSec->setSuffix(" s");
 
+    form->addRow(QString::fromUtf8(u8"轮次"), m_spinFixedStimRounds);
     form->addRow(QString::fromUtf8(u8"固定频率"), m_spinFixedStimFreqHz);
     form->addRow(tr("固定振幅"), m_spinFixedStimAmp);
     form->addRow(tr("固定相宽"), m_spinFixedStimPhaseUs);
@@ -1375,6 +1493,11 @@ void MainWindow::loadElectrodeConfig()
         const double savedFreqHz = qMax(0.1, s.value("fixed_stim/freq_hz", m_spinFixedStimFreqHz->value()).toDouble());
         QSignalBlocker blocker(m_spinFixedStimFreqHz);
         m_spinFixedStimFreqHz->setValue(savedFreqHz);
+    }
+    if (m_spinFixedStimRounds) {
+        const int savedRounds = qMax(1, s.value("fixed_stim/rounds", m_spinFixedStimRounds->value()).toInt());
+        QSignalBlocker blocker(m_spinFixedStimRounds);
+        m_spinFixedStimRounds->setValue(savedRounds);
     }
     if (m_spinFixedStimCollectPreSec) {
         const double savedSec = qMax(0.1, s.value("fixed_stim/collect_pre_sec", m_spinFixedStimCollectPreSec->value()).toDouble());
@@ -1458,6 +1581,7 @@ void MainWindow::saveElectrodeConfig() const
     s.setValue("fixed_stim/amp_uA", m_spinFixedStimAmp ? m_spinFixedStimAmp->value() : 20);
     s.setValue("fixed_stim/phase_us", m_spinFixedStimPhaseUs ? m_spinFixedStimPhaseUs->value() : 500);
     s.setValue("fixed_stim/freq_hz", m_spinFixedStimFreqHz ? m_spinFixedStimFreqHz->value() : 10.0);
+    s.setValue("fixed_stim/rounds", m_spinFixedStimRounds ? m_spinFixedStimRounds->value() : 1);
     s.setValue("fixed_stim/collect_pre_sec", m_spinFixedStimCollectPreSec ? m_spinFixedStimCollectPreSec->value() : 60.0);
     s.setValue("fixed_stim/stim_window_sec", m_spinFixedStimWindowSec ? m_spinFixedStimWindowSec->value() : 60.0);
     s.setValue("fixed_stim/collect_post_sec", m_spinFixedStimCollectPostSec ? m_spinFixedStimCollectPostSec->value() : 60.0);
@@ -2350,7 +2474,7 @@ void MainWindow::onFixedStimExperiment()
     const double fixedAmp_uA = m_spinFixedStimAmp ? m_spinFixedStimAmp->value() : 20.0;
     const int fixedPhaseUs = m_spinFixedStimPhaseUs ? m_spinFixedStimPhaseUs->value() : 500;
     const double fixedFreqHz = m_spinFixedStimFreqHz ? m_spinFixedStimFreqHz->value() : 10.0;
-    const int targetRounds = m_spinClosedLoopRounds ? m_spinClosedLoopRounds->value() : 1;
+    const int targetRounds = m_spinFixedStimRounds ? m_spinFixedStimRounds->value() : 1;
 
     const int periodUs = qMax(1, qRound(1000000.0 / fixedFreqHz));
     const int stimActiveUs = fixedPhaseUs * 2;
