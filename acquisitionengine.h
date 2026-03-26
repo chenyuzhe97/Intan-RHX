@@ -70,6 +70,11 @@ public:
                           int amplitude_uA,
                           int numPulses,
                           int triggerSource);
+    void applyReplayStim(const QString &electrodeName,
+                         int amplitude_uA,
+                         int numPulses,
+                         int triggerSource,
+                         int phaseUs);
     void applyFixedReplayStim(const QString &electrodeName,
                               double amplitude_uA,
                               int phase_us,

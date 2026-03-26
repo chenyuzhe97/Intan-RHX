@@ -1280,10 +1280,16 @@ void MainWindow::setupElectrodeConfigDock()
     m_spinClosedLoopPhaseUs->setSingleStep(10);
     m_spinClosedLoopPhaseUs->setValue(qMax(1, m_closedLoopPhaseUs));
     m_spinClosedLoopPhaseUs->setSuffix(" us");
+    m_spinVoidStimPhaseUs = new QSpinBox(gbExperiment);
+    m_spinVoidStimPhaseUs->setRange(1, 20000);
+    m_spinVoidStimPhaseUs->setSingleStep(10);
+    m_spinVoidStimPhaseUs->setValue(qMax(1, m_voidStimPhaseUs));
+    m_spinVoidStimPhaseUs->setSuffix(" us");
     experimentForm->addRow(tr("AB Epoch 时长"), m_spinEpochSec);
     experimentForm->addRow(tr("Rounds"), m_spinClosedLoopRounds);
     experimentForm->addRow(QString::fromUtf8(u8"每个 Epoch 最多刺激数（偶数；a/b 各一半）"), m_spinClosedLoopMaxStimPerEpoch);
     experimentForm->addRow(QString::fromUtf8(u8"闭环相宽（每相）"), m_spinClosedLoopPhaseUs);
+    experimentForm->addRow(QString::fromUtf8(u8"虚空刺激相宽（每相）"), m_spinVoidStimPhaseUs);
     experimentLayout->addLayout(experimentForm);
 
     QGroupBox *gbClosedLoopFilter = new QGroupBox(tr("闭环算法滤波参数"), panel);
@@ -1399,6 +1405,10 @@ void MainWindow::setupElectrodeConfigDock()
                 syncExperimentRoutingConfig();
                 saveElectrodeConfig();
             });
+    connect(m_spinVoidStimPhaseUs, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int) {
+                saveElectrodeConfig();
+            });
     connect(m_chkClosedLoopBpEnabled, &QCheckBox::toggled, this,
             [this](bool) {
                 syncExperimentRoutingConfig();
@@ -1475,6 +1485,20 @@ void MainWindow::setupFixedStimDock()
     m_spinFixedStimRounds->setSingleStep(1);
     m_spinFixedStimRounds->setValue(1);
 
+    QWidget *fixedStimElectrodeWidget = new QWidget(gbFixedStim);
+    QHBoxLayout *fixedStimElectrodeLayout = new QHBoxLayout(fixedStimElectrodeWidget);
+    fixedStimElectrodeLayout->setContentsMargins(0, 0, 0, 0);
+    QLabel *fixedStimElectrodePrefix = new QLabel(QStringLiteral("B"), fixedStimElectrodeWidget);
+    m_spinFixedStimElectrode = new QSpinBox(fixedStimElectrodeWidget);
+    m_spinFixedStimElectrode->setRange(1, 15);
+    m_spinFixedStimElectrode->setSingleStep(2);
+    m_spinFixedStimElectrode->setValue(m_spinStim_B_a
+                                           ? normalizeClosedLoopStimHardwareChannel(m_spinStim_B_a->value())
+                                           : 3);
+    m_spinFixedStimElectrode->setToolTip(QString::fromUtf8(u8"填写实际奇数硬件通道号，固定刺激实验固定使用 B 侧。"));
+    fixedStimElectrodeLayout->addWidget(fixedStimElectrodePrefix);
+    fixedStimElectrodeLayout->addWidget(m_spinFixedStimElectrode, 1);
+
     m_spinFixedStimAmp = new QDoubleSpinBox(gbFixedStim);
     m_spinFixedStimAmp->setDecimals(1);
     m_spinFixedStimAmp->setRange(0.5, 127.5);
@@ -1517,6 +1541,7 @@ void MainWindow::setupFixedStimDock()
     m_spinFixedStimIdleSec->setSuffix(" s");
 
     form->addRow(QString::fromUtf8(u8"轮次"), m_spinFixedStimRounds);
+    form->addRow(QString::fromUtf8(u8"固定刺激目标(B)"), fixedStimElectrodeWidget);
     form->addRow(QString::fromUtf8(u8"固定频率"), m_spinFixedStimFreqHz);
     form->addRow(tr("固定振幅"), m_spinFixedStimAmp);
     form->addRow(tr("固定相宽"), m_spinFixedStimPhaseUs);
@@ -1535,6 +1560,11 @@ void MainWindow::setupFixedStimDock()
     if (m_dockElectrode) {
         splitDockWidget(m_dockElectrode, m_dockFixedStim, Qt::Vertical);
     }
+
+    connect(m_spinFixedStimElectrode, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int) {
+                saveElectrodeConfig();
+            });
 
     updateFixedStimAmplitudeControl();
 }
@@ -1569,6 +1599,11 @@ void MainWindow::loadElectrodeConfig()
     if (m_spinClosedLoopPhaseUs) {
         QSignalBlocker blocker(m_spinClosedLoopPhaseUs);
         m_spinClosedLoopPhaseUs->setValue(m_closedLoopPhaseUs);
+    }
+    m_voidStimPhaseUs = qMax(1, s.value("void_stim/phase_us", m_voidStimPhaseUs).toInt());
+    if (m_spinVoidStimPhaseUs) {
+        QSignalBlocker blocker(m_spinVoidStimPhaseUs);
+        m_spinVoidStimPhaseUs->setValue(m_voidStimPhaseUs);
     }
     m_closedLoopBpEnabled = s.value("closed_loop/filter_bp_enabled", m_closedLoopBpEnabled).toBool();
     m_closedLoopBpLowHz = qMax(0.1, s.value("closed_loop/filter_bp_low_hz", m_closedLoopBpLowHz).toDouble());
@@ -1605,6 +1640,15 @@ void MainWindow::loadElectrodeConfig()
         const int savedRounds = qMax(1, s.value("fixed_stim/rounds", m_spinFixedStimRounds->value()).toInt());
         QSignalBlocker blocker(m_spinFixedStimRounds);
         m_spinFixedStimRounds->setValue(savedRounds);
+    }
+    if (m_spinFixedStimElectrode) {
+        const int defaultHardwareChannel = m_spinStim_B_a
+                                               ? normalizeClosedLoopStimHardwareChannel(m_spinStim_B_a->value())
+                                               : 3;
+        const int savedChannel = normalizeClosedLoopStimHardwareChannel(
+            s.value("fixed_stim/electrode_channel", defaultHardwareChannel).toInt());
+        QSignalBlocker blocker(m_spinFixedStimElectrode);
+        m_spinFixedStimElectrode->setValue(savedChannel);
     }
     if (m_spinFixedStimCollectPreSec) {
         const double savedSec = qMax(0.1, s.value("fixed_stim/collect_pre_sec", m_spinFixedStimCollectPreSec->value()).toDouble());
@@ -1653,6 +1697,10 @@ void MainWindow::loadElectrodeConfig()
     loadStimUiValue("electrode/stim_A_b_num", m_spinStim_A_b);
     loadStimUiValue("electrode/stim_B_a_num", m_spinStim_B_a);
     loadStimUiValue("electrode/stim_B_b_num", m_spinStim_B_b);
+    if (m_spinFixedStimElectrode && !s.contains("fixed_stim/electrode_channel") && m_spinStim_B_a) {
+        QSignalBlocker blocker(m_spinFixedStimElectrode);
+        m_spinFixedStimElectrode->setValue(normalizeClosedLoopStimHardwareChannel(m_spinStim_B_a->value()));
+    }
 
     QString err;
     QVector<int> tmp;
@@ -1686,6 +1734,13 @@ void MainWindow::syncExperimentRoutingConfig()
         if (m_spinClosedLoopPhaseUs->value() != m_closedLoopPhaseUs) {
             QSignalBlocker blocker(m_spinClosedLoopPhaseUs);
             m_spinClosedLoopPhaseUs->setValue(m_closedLoopPhaseUs);
+        }
+    }
+    if (m_spinVoidStimPhaseUs) {
+        m_voidStimPhaseUs = qMax(1, m_spinVoidStimPhaseUs->value());
+        if (m_spinVoidStimPhaseUs->value() != m_voidStimPhaseUs) {
+            QSignalBlocker blocker(m_spinVoidStimPhaseUs);
+            m_spinVoidStimPhaseUs->setValue(m_voidStimPhaseUs);
         }
     }
     if (m_spinClosedLoopBpLowHz) {
@@ -1765,6 +1820,8 @@ void MainWindow::saveElectrodeConfig() const
                    : normalizeClosedLoopMaxStimPerEpochValue(m_closedLoopMaxStimPerEpoch));
     s.setValue("closed_loop/stim_phase_us",
                m_spinClosedLoopPhaseUs ? qMax(1, m_spinClosedLoopPhaseUs->value()) : qMax(1, m_closedLoopPhaseUs));
+    s.setValue("void_stim/phase_us",
+               m_spinVoidStimPhaseUs ? qMax(1, m_spinVoidStimPhaseUs->value()) : qMax(1, m_voidStimPhaseUs));
     s.setValue("closed_loop/filter_bp_enabled",
                m_chkClosedLoopBpEnabled ? m_chkClosedLoopBpEnabled->isChecked() : m_closedLoopBpEnabled);
     s.setValue("closed_loop/filter_bp_low_hz",
@@ -1775,6 +1832,10 @@ void MainWindow::saveElectrodeConfig() const
     s.setValue("fixed_stim/phase_us", m_spinFixedStimPhaseUs ? m_spinFixedStimPhaseUs->value() : 500);
     s.setValue("fixed_stim/freq_hz", m_spinFixedStimFreqHz ? m_spinFixedStimFreqHz->value() : 10.0);
     s.setValue("fixed_stim/rounds", m_spinFixedStimRounds ? m_spinFixedStimRounds->value() : 1);
+    s.setValue("fixed_stim/electrode_channel",
+               m_spinFixedStimElectrode
+                   ? normalizeClosedLoopStimHardwareChannel(m_spinFixedStimElectrode->value())
+                   : 3);
     s.setValue("fixed_stim/collect_pre_sec", m_spinFixedStimCollectPreSec ? m_spinFixedStimCollectPreSec->value() : 60.0);
     s.setValue("fixed_stim/stim_window_sec", m_spinFixedStimWindowSec ? m_spinFixedStimWindowSec->value() : 60.0);
     s.setValue("fixed_stim/collect_post_sec", m_spinFixedStimCollectPostSec ? m_spinFixedStimCollectPostSec->value() : 60.0);
@@ -2537,10 +2598,41 @@ void MainWindow::onVoidStim()
         int itemIndex = -1;
         int displayIndex = -1;
         qint64 timeMs = 0;
-        QString electrode;
+        QString electrodeInternal;
+        QString electrodeDisplay;
         int amp_uA = 0;
         int pulses = 1;
         int triggerSource = 0;
+    };
+
+    saveElectrodeConfig();
+    syncExperimentRoutingConfig();
+    m_voidStimPhaseUs = m_spinVoidStimPhaseUs ? qMax(1, m_spinVoidStimPhaseUs->value()) : m_voidStimPhaseUs;
+
+    auto displayElectrodeFromInternal = [](const QString &internalName) -> QString {
+        if (internalName.size() >= 2) {
+            const QChar prefix = internalName.at(0);
+            bool ok = false;
+            const int legacyIndex = internalName.mid(1).toInt(&ok);
+            if (ok && legacyIndex > 0) {
+                return QStringLiteral("%1%2")
+                    .arg(prefix)
+                    .arg(normalizeClosedLoopStimHardwareChannel(
+                        hardwareChannelFromLegacyStimIndex(legacyIndex)));
+            }
+        }
+        return internalName;
+    };
+
+    auto replayElectrodeForUi = [this](int sourcePhaseIndex, int channelIndex) -> QString {
+        if (sourcePhaseIndex == 0) {
+            if (channelIndex == 0) return kStim_B_a;
+            if (channelIndex == 1) return kStim_B_b;
+        } else if (sourcePhaseIndex == 1) {
+            if (channelIndex == 0) return kStim_A_a;
+            if (channelIndex == 1) return kStim_A_b;
+        }
+        return QString();
     };
 
     QVector<ReplayEvent> replayEvents;
@@ -2569,11 +2661,17 @@ void MainWindow::onVoidStim()
         ReplayEvent event;
         event.itemIndex = jsonToInt(obj.value(QStringLiteral("item_index")), i);
         event.timeMs = timeMs;
-        event.electrode = jsonToString(obj.value(QStringLiteral("target_electrode")));
+        const int channelIndex = jsonToInt(obj.value(QStringLiteral("channel_index")), -1);
+        const QString jsonElectrode = jsonToString(obj.value(QStringLiteral("target_electrode")));
+        event.electrodeInternal = replayElectrodeForUi(sourcePhaseIndex, channelIndex);
+        if (event.electrodeInternal.isEmpty()) {
+            event.electrodeInternal = jsonElectrode;
+        }
+        event.electrodeDisplay = displayElectrodeFromInternal(event.electrodeInternal);
         event.amp_uA = jsonToInt(obj.value(QStringLiteral("amp_uA")), 0);
         event.pulses = qMax(1, jsonToInt(obj.value(QStringLiteral("pulses")), 1));
         event.triggerSource = jsonToInt(obj.value(QStringLiteral("trigger_source")), 1);
-        if (event.electrode.isEmpty() || event.amp_uA <= 0) {
+        if (event.electrodeInternal.isEmpty() || event.amp_uA <= 0) {
             continue;
         }
 
@@ -2645,7 +2743,7 @@ void MainWindow::onVoidStim()
             item.pulses = event.pulses;
             item.ch = -1;
             item.spike_uV = 0.0;
-            item.electrode = event.electrode;
+            item.electrode = event.electrodeDisplay;
             item.fired = false;
             items.push_back(item);
         }
@@ -2661,12 +2759,12 @@ void MainWindow::onVoidStim()
     for (const ReplayEvent &event : replayEvents) {
         if (m_stimLog) {
             m_stimLog->logPlanned(0, 0, event.itemIndex, double(event.timeMs),
-                                  event.electrode, event.amp_uA, event.pulses, -1, 0.0);
+                                  event.electrodeDisplay, event.amp_uA, event.pulses, -1, 0.0);
         }
 
         const int delayMs = int(qMax<qint64>(0, event.timeMs));
         QTimer::singleShot(delayMs, this,
-                           [this, replayToken, event]() {
+                           [this, replayToken, event, phaseUs = m_voidStimPhaseUs]() {
                                if (replayToken != m_voidStimReplayToken || !m_voidStimActive) return;
                                if (!m_engine) return;
                                if (m_timeline) {
@@ -2674,12 +2772,13 @@ void MainWindow::onVoidStim()
                                }
                                if (m_stimLog) {
                                    m_stimLog->logFired(0, 0, event.itemIndex,
-                                                       event.electrode, event.amp_uA, event.pulses);
+                                                       event.electrodeDisplay, event.amp_uA, event.pulses);
                                }
-                               m_engine->applyAdaptiveStim(event.electrode,
-                                                           event.amp_uA,
-                                                           event.pulses,
-                                                           event.triggerSource);
+                               m_engine->applyReplayStim(event.electrodeInternal,
+                                                         event.amp_uA,
+                                                         event.pulses,
+                                                         event.triggerSource,
+                                                         phaseUs);
                            });
     }
 
@@ -2689,10 +2788,11 @@ void MainWindow::onVoidStim()
                            onVoidStimReplayCompleted();
                        });
 
-    appendLog(QStringLiteral("Virtual stimulation started from %1: A-driven events=%2, duration=%3 ms, recording=%4")
+    appendLog(QStringLiteral("Virtual stimulation started from %1: A-driven events=%2, duration=%3 ms, phase=%4 us, recording=%5")
                   .arg(planPath)
                   .arg(replayEvents.size())
                   .arg(experimentDurationMs)
+                  .arg(m_voidStimPhaseUs)
                   .arg(m_activeRecordingPath));
 }
 
@@ -2726,7 +2826,12 @@ void MainWindow::onFixedStimExperiment()
     const qint64 idleMs = qMax<qint64>(0, qRound64((m_spinFixedStimIdleSec ? m_spinFixedStimIdleSec->value() : 60.0) * 1000.0));
     const qint64 roundDurationMs = collectPreMs + stimWindowMs + collectPostMs + idleMs;
 
-    const QString electrodeName = manualStimElectrodeName();
+    const int fixedStimHardwareChannel = normalizeClosedLoopStimHardwareChannel(
+        m_spinFixedStimElectrode ? m_spinFixedStimElectrode->value() : 3);
+    const QString electrodeNameInternal =
+        QStringLiteral("B%1").arg(legacyStimIndexFromHardwareChannel(fixedStimHardwareChannel));
+    const QString electrodeNameDisplay =
+        QStringLiteral("B%1").arg(fixedStimHardwareChannel);
     const int triggerSource = m_spinManualTriggerSource ? m_spinManualTriggerSource->value() : 0;
     const double fixedAmp_uA = m_spinFixedStimAmp ? m_spinFixedStimAmp->value() : 20.0;
     const int fixedPhaseUs = m_spinFixedStimPhaseUs ? m_spinFixedStimPhaseUs->value() : 500;
@@ -2786,7 +2891,7 @@ void MainWindow::onFixedStimExperiment()
     m_managedSessionClockActive = true;
     m_voidStimActive = true;
     m_closedLoopExperimentActive = false;
-    m_activeFixedStimElectrode = electrodeName;
+    m_activeFixedStimElectrode = electrodeNameDisplay;
     m_activeFixedStimAmp_uA = fixedAmp_uA;
     m_activeFixedStimPhaseUs = fixedPhaseUs;
     m_activeFixedStimFreqHz = fixedFreqHz;
@@ -2812,7 +2917,7 @@ void MainWindow::onFixedStimExperiment()
         record.phaseIndex = -1;
         record.itemIndex = roundIndex;
         record.plannedTimeMs = stimStartMs;
-        record.electrode = electrodeName;
+        record.electrode = electrodeNameDisplay;
         record.amp_uA = qRound(fixedAmp_uA);
         record.pulses = pulsesPerTrain;
         record.triggerSource = triggerSource;
@@ -2820,12 +2925,12 @@ void MainWindow::onFixedStimExperiment()
 
         if (m_stimLog) {
             m_stimLog->logPlanned(-1, -1, roundIndex, double(stimStartMs),
-                                  electrodeName, qRound(fixedAmp_uA), pulsesPerTrain, -1, 0.0);
+                                  electrodeNameDisplay, qRound(fixedAmp_uA), pulsesPerTrain, -1, 0.0);
         }
 
         QTimer::singleShot(int(stimStartMs), this,
                            [this, replayToken, roundIndex, stimStartMs,
-                            electrodeName, fixedAmp_uA, fixedPhaseUs,
+                            electrodeNameInternal, electrodeNameDisplay, fixedAmp_uA, fixedPhaseUs,
                             fixedFreqHz, triggerSource, pulsesPerTrain, stimWindowMs]() {
                                if (replayToken != m_voidStimReplayToken || !m_voidStimActive) return;
                                if (!m_engine) return;
@@ -2841,9 +2946,9 @@ void MainWindow::onFixedStimExperiment()
                                }
                                if (m_stimLog) {
                                    m_stimLog->logFired(-1, -1, roundIndex,
-                                                       electrodeName, qRound(fixedAmp_uA), pulsesPerTrain);
+                                                       electrodeNameDisplay, qRound(fixedAmp_uA), pulsesPerTrain);
                                }
-                               m_engine->applyFixedTrainStim(electrodeName,
+                               m_engine->applyFixedTrainStim(electrodeNameInternal,
                                                              fixedAmp_uA,
                                                              fixedPhaseUs,
                                                              fixedFreqHz,
@@ -2859,7 +2964,7 @@ void MainWindow::onFixedStimExperiment()
                        });
 
     appendLog(QStringLiteral("Fixed-stim experiment started: target=%1, amplitude=%2 uA, phase=%3 us, frequency=%4 Hz, rounds=%5, pre=%6 ms, stim=%7 ms, post=%8 ms, idle=%9 ms, duration=%10 ms, recording=%11")
-                  .arg(electrodeName)
+                  .arg(electrodeNameDisplay)
                   .arg(fixedAmp_uA, 0, 'f', m_spinFixedStimAmp ? m_spinFixedStimAmp->decimals() : 1)
                   .arg(fixedPhaseUs)
                   .arg(fixedFreqHz, 0, 'f', 3)

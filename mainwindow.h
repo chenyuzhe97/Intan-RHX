@@ -178,6 +178,7 @@ private:
     QSpinBox       *m_spinClosedLoopRounds = nullptr;
     QSpinBox       *m_spinClosedLoopMaxStimPerEpoch = nullptr;
     QSpinBox       *m_spinClosedLoopPhaseUs = nullptr;
+    QSpinBox       *m_spinVoidStimPhaseUs = nullptr;
     QCheckBox      *m_chkClosedLoopBpEnabled = nullptr;
     QDoubleSpinBox *m_spinClosedLoopBpLowHz = nullptr;
     QDoubleSpinBox *m_spinClosedLoopBpHighHz = nullptr;
@@ -236,6 +237,7 @@ private:
     int    m_closedLoopCompletedRounds = 0;
     int    m_closedLoopMaxStimPerEpoch = 10;
     int    m_closedLoopPhaseUs = 60;
+    int    m_voidStimPhaseUs = 60;
     bool   m_closedLoopBpEnabled = true;
     double m_closedLoopBpLowHz = 300.0;
     double m_closedLoopBpHighHz = 3000.0;
@@ -310,6 +312,7 @@ private:
     QSpinBox  *m_spinFixedStimPhaseUs = nullptr;
     QDoubleSpinBox *m_spinFixedStimFreqHz = nullptr;
     QSpinBox  *m_spinFixedStimRounds = nullptr;
+    QSpinBox  *m_spinFixedStimElectrode = nullptr;
     QDoubleSpinBox *m_spinFixedStimCollectPreSec = nullptr;
     QDoubleSpinBox *m_spinFixedStimWindowSec = nullptr;
     QDoubleSpinBox *m_spinFixedStimCollectPostSec = nullptr;

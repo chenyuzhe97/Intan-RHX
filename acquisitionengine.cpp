@@ -645,6 +645,13 @@ void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
                                           int numPulses,
                                           int triggerSource)
 {
+    applyReplayStim(electrodeName,
+                    amplitude_uA,
+                    numPulses,
+                    triggerSource,
+                    m_closedLoopStimPhaseUs);
+    return;
+
     if (!m_deviceOpened || !m_stimController) return;
     if (amplitude_uA <= 0 || numPulses <= 0) return;
 
@@ -685,6 +692,52 @@ void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
                         .arg(triggerSource));
 
     // ===== 3）如果刚才是连续采集，就自动恢复 =====
+    if (resumeAfter) {
+        resumeContinuousAfterStim();
+    }
+}
+
+void AcquisitionEngine::applyReplayStim(const QString &electrodeName,
+                                        int amplitude_uA,
+                                        int numPulses,
+                                        int triggerSource,
+                                        int phaseUs)
+{
+    if (!m_deviceOpened || !m_stimController) return;
+    if (amplitude_uA <= 0 || numPulses <= 0) return;
+
+    const bool resumeAfter = m_continuousRunning;
+    if (resumeAfter) {
+        emit logMessage("回放/闭环刺激：更新刺激参数...");
+        pauseContinuousForStim();
+    }
+
+    phaseUs = qMax(1, phaseUs);
+    const int firstDur_us = phaseUs;
+    const int secondDur_us = phaseUs;
+    const int interphase_us = 0;
+    const int replayAmplitude_nA = qMax(1, qRound(amplitude_uA * 1000.0 / 5.0));
+
+    configureStim(electrodeName,
+                  replayAmplitude_nA,
+                  replayAmplitude_nA,
+                  firstDur_us,
+                  secondDur_us,
+                  interphase_us,
+                  numPulses,
+                  triggerSource);
+
+    qDebug() << "当前触发:" << triggerSource;
+    m_stimController->stimTrigger(triggerSource, true);
+    m_stimController->stimTrigger(triggerSource, false);
+
+    emit logMessage(QStringLiteral("回放/闭环刺激：%1, 幅度=%2 uA, 脉冲数=%3, trigger=%4, phase=%5 us")
+                        .arg(electrodeName)
+                        .arg(amplitude_uA)
+                        .arg(numPulses)
+                        .arg(triggerSource)
+                        .arg(phaseUs));
+
     if (resumeAfter) {
         resumeContinuousAfterStim();
     }
