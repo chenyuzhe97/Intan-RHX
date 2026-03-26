@@ -47,7 +47,9 @@ public:
     bool isContinuousRunning() const { return m_continuousRunning; }
     bool isRecording() const { return m_isRecording; }
     void setStimStepSize(StimStepSize stepSize);
+    void setClosedLoopStimPhaseUs(int phaseUs);
     StimStepSize stimStepSize() const { return m_stimStepSize; }
+    int closedLoopStimPhaseUs() const { return m_closedLoopStimPhaseUs; }
     bool hasPendingStimStepSizeApply() const { return m_appliedStimStepSize != m_stimStepSize; }
 
     // 简单的刺激配置接口：把电极参数交给底层 Controller
@@ -139,6 +141,7 @@ private:
     Controller      *m_stimController  = nullptr;
     StimStepSize     m_stimStepSize = StimStepSize500nA;
     StimStepSize     m_appliedStimStepSize = StimStepSizeUnrecognized;
+    int              m_closedLoopStimPhaseUs = 60;
 
     // ⭐ 使用 std::ofstream 直接写 Intan 原生二进制数据
     std::ofstream            m_recordStream;

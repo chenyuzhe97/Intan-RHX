@@ -177,6 +177,7 @@ private:
     QDoubleSpinBox *m_spinEpochSec = nullptr;
     QSpinBox       *m_spinClosedLoopRounds = nullptr;
     QSpinBox       *m_spinClosedLoopMaxStimPerEpoch = nullptr;
+    QSpinBox       *m_spinClosedLoopPhaseUs = nullptr;
     QCheckBox      *m_chkClosedLoopBpEnabled = nullptr;
     QDoubleSpinBox *m_spinClosedLoopBpLowHz = nullptr;
     QDoubleSpinBox *m_spinClosedLoopBpHighHz = nullptr;
@@ -234,6 +235,7 @@ private:
     double colletion_time = 60.0;
     int    m_closedLoopCompletedRounds = 0;
     int    m_closedLoopMaxStimPerEpoch = 10;
+    int    m_closedLoopPhaseUs = 60;
     bool   m_closedLoopBpEnabled = true;
     double m_closedLoopBpLowHz = 300.0;
     double m_closedLoopBpHighHz = 3000.0;

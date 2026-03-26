@@ -49,6 +49,11 @@ void AcquisitionEngine::setStimStepSize(StimStepSize stepSize)
     }
 }
 
+void AcquisitionEngine::setClosedLoopStimPhaseUs(int phaseUs)
+{
+    m_closedLoopStimPhaseUs = qMax(1, phaseUs);
+}
+
 bool AcquisitionEngine::applyStimStepSizeToHardware()
 {
     if (!m_deviceOpened || !m_rhxController) {
@@ -651,9 +656,10 @@ void AcquisitionEngine::applyAdaptiveStim(const QString &electrodeName,
     }
 
     // ===== 2）正式配置刺激并触发 =====
-    int firstDur_us   = 500;
-    int secondDur_us  = 500;
-    int interphase_us = 500;
+    const int phaseUs = qMax(1, m_closedLoopStimPhaseUs);
+    const int firstDur_us   = phaseUs;
+    const int secondDur_us  = phaseUs;
+    const int interphase_us = 0;
     // Algorithm output is in uA. Low-level stimulation parameters are stored
     // in nA, and the closed-loop path keeps its experiment-specific /5 scaling.
     const int closedLoopAmplitude_nA = qMax(1, qRound(amplitude_uA * 1000.0 / 5.0));
