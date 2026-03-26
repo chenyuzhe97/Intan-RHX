@@ -63,7 +63,7 @@ static QString stimStepSizeDisplayText(StimStepSize step)
 
 static int normalizeClosedLoopMaxStimPerEpochValue(int value)
 {
-    int normalized = qMax(2, value);
+    int normalized = qBound(2, value, 999998);
     if ((normalized % 2) != 0) {
         ++normalized;
     }
@@ -1272,7 +1272,7 @@ void MainWindow::setupElectrodeConfigDock()
     m_spinClosedLoopRounds->setSingleStep(1);
     m_spinClosedLoopRounds->setValue(1);
     m_spinClosedLoopMaxStimPerEpoch = new QSpinBox(gbExperiment);
-    m_spinClosedLoopMaxStimPerEpoch->setRange(2, 1000);
+    m_spinClosedLoopMaxStimPerEpoch->setRange(2, 999998);
     m_spinClosedLoopMaxStimPerEpoch->setSingleStep(2);
     m_spinClosedLoopMaxStimPerEpoch->setValue(normalizeClosedLoopMaxStimPerEpochValue(m_closedLoopMaxStimPerEpoch));
     m_spinClosedLoopPhaseUs = new QSpinBox(gbExperiment);
