@@ -1,6 +1,14 @@
 #include "abalgorithm.h"
 #include <QtMath>
 
+void ABAlgorithm::setBandPassHz(double lowCutHz, double highCutHz)
+{
+    const double safeLow = qMax(0.1, lowCutHz);
+    const double safeHigh = qMax(safeLow + 0.1, highCutHz);
+    m_bpLowCutHz = safeLow;
+    m_bpHighCutHz = safeHigh;
+}
+
 ABAlgorithm::ABAlgorithm(QObject *parent)
     : QObject(parent)
 {
@@ -172,7 +180,7 @@ QVector<ABAlgorithm::Result> ABAlgorithm::analyzeEpoch(
         }
 
         // 2) 带通滤波，用于 spike
-        QVector<double> xf = bandPassFilter(x, m_bpLowCutHz, m_bpHighCutHz);
+        QVector<double> xf = m_bpEnabled ? bandPassFilter(x, m_bpLowCutHz, m_bpHighCutHz) : x;
         if (xf.size() != nSamples) {
             // 理论上是一样大的，这里防御性处理一下
             xf.resize(nSamples);

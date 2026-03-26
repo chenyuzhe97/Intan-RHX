@@ -27,6 +27,11 @@ public:
 
     // ⭐ 新增：外部（MainWindow）设置采样率
     inline void setSampleRateHz(double fs) { m_sampleRateHz = fs; }
+    inline void setBandPassEnabled(bool enabled) { m_bpEnabled = enabled; }
+    inline bool bandPassEnabled() const { return m_bpEnabled; }
+    void setBandPassHz(double lowCutHz, double highCutHz);
+    inline double bandPassLowCutHz() const { return m_bpLowCutHz; }
+    inline double bandPassHighCutHz() const { return m_bpHighCutHz; }
 
     // ⭐ 如果你想在外面直接用带通滤波，也可以把这个声明成 public
     QVector<double> bandPassFilter(
@@ -52,6 +57,7 @@ private:
 
 private:
     double m_sampleRateHz      = 30000.0;  // 采样率
+    bool   m_bpEnabled         = true;
     double m_bpLowCutHz        = 300.0;
     double m_bpHighCutHz       = 3000.0;
     double m_spikeThreshold_uV = 50.0;

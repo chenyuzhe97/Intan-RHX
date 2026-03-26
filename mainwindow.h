@@ -177,6 +177,9 @@ private:
     QDoubleSpinBox *m_spinEpochSec = nullptr;
     QSpinBox       *m_spinClosedLoopRounds = nullptr;
     QSpinBox       *m_spinClosedLoopMaxStimPerEpoch = nullptr;
+    QCheckBox      *m_chkClosedLoopBpEnabled = nullptr;
+    QDoubleSpinBox *m_spinClosedLoopBpLowHz = nullptr;
+    QDoubleSpinBox *m_spinClosedLoopBpHighHz = nullptr;
 
     // ===== view gain =====
     QDoubleSpinBox *m_spinGainA = nullptr;   // ±uV
@@ -231,6 +234,9 @@ private:
     double colletion_time = 60.0;
     int    m_closedLoopCompletedRounds = 0;
     int    m_closedLoopMaxStimPerEpoch = 10;
+    bool   m_closedLoopBpEnabled = true;
+    double m_closedLoopBpLowHz = 300.0;
+    double m_closedLoopBpHighHz = 3000.0;
 
     QString            m_sessionRootDir;
     QString            m_activeSessionDir;
@@ -275,12 +281,12 @@ private:
     // ====== 你要自定义的：每个 phase 用哪些通道做区域平均 ======
     // 注意：内部存的是 0-based index（用于 channelData[ch]）。GUI 显示/输入用 1-based。
     // phaseIndex==0: 来自老鼠A的感受电极( stream0 )，算 a/b 两条平均信号
-    QVector<int> kSense_A_a = {0, 4, 6};      // GUI 默认显示：1,5,7
-    QVector<int> kSense_A_b = {8, 10, 14};    // GUI 默认显示：9,11,15
+    QVector<int> kSense_A_a = {0, 2, 4, 6};      // GUI 默认显示：1,3,5,7
+    QVector<int> kSense_A_b = {8, 10, 12, 14};   // GUI 默认显示：9,11,13,15
 
     // phaseIndex==1: 来自老鼠B的感受电极( stream2 )，算 a'/b' 两条平均信号
-    QVector<int> kSense_B_a = {0, 4, 6};      // GUI 默认显示：1,5,7
-    QVector<int> kSense_B_b = {8, 10, 14};    // GUI 默认显示：9,11,15
+    QVector<int> kSense_B_a = {0, 2, 4, 6};      // GUI 默认显示：1,3,5,7
+    QVector<int> kSense_B_b = {8, 10, 12, 14};   // GUI 默认显示：9,11,13,15
 
     // ====== 你要自定义的：刺激电极名字（必须符合你 ElectrodeParameters 的命名规则）======
     // 你说后面固定 A 开头 / B 开头，所以 GUI 里只编辑数字后缀

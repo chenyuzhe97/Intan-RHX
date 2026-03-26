@@ -52,7 +52,10 @@ void ABExperimentCoordinator::setEpochDurationSec(double epochDurationSec)
 
 void ABExperimentCoordinator::setMaxStimPerEpoch(int maxStimPerEpoch)
 {
-    m_maxStimPerEpoch = qMax(1, maxStimPerEpoch);
+    m_maxStimPerEpoch = qMax(2, maxStimPerEpoch);
+    if ((m_maxStimPerEpoch % 2) != 0) {
+        ++m_maxStimPerEpoch;
+    }
 }
 
 void ABExperimentCoordinator::setRoutingConfig(const RoutingConfig &config)
@@ -180,24 +183,42 @@ void ABExperimentCoordinator::handleEpochReady(int phaseIndex,
     const double fs = (m_sampleRateHz > 0.0) ? m_sampleRateHz : 30000.0;
     const qint64 phaseStartTimeMs = m_runClockActive ? m_runClock.elapsed() : 0;
 
-    QVector<ABAlgorithm::Result> candidates;
-    candidates.reserve(allResults.size());
+    QVector<ABAlgorithm::Result> candidatesA;
+    QVector<ABAlgorithm::Result> candidatesB;
+    candidatesA.reserve(allResults.size());
+    candidatesB.reserve(allResults.size());
     for (const auto &r : allResults) {
         if (!r.needStim) continue;
         if (r.suggestedAmplitude_uA <= 0) continue;
-        candidates.push_back(r);
+        if (r.channelIndex == 0) {
+            candidatesA.push_back(r);
+        } else if (r.channelIndex == 1) {
+            candidatesB.push_back(r);
+        }
     }
-    if (candidates.isEmpty()) {
+    if (candidatesA.isEmpty() && candidatesB.isEmpty()) {
         emit logMessage(phaseName + QStringLiteral(": no stimulation scheduled."));
         finishPhase(0);
         return;
     }
 
-    std::sort(candidates.begin(), candidates.end(),
-              [](const ABAlgorithm::Result &a, const ABAlgorithm::Result &b) {
-                  return a.spikeAmplitude_uV > b.spikeAmplitude_uV;
-              });
-    if (candidates.size() > m_maxStimPerEpoch) candidates.resize(m_maxStimPerEpoch);
+    const int perRegionLimit = qMax(1, m_maxStimPerEpoch / 2);
+    auto trimRegionCandidates = [perRegionLimit](QVector<ABAlgorithm::Result> &regionCandidates) {
+        std::sort(regionCandidates.begin(), regionCandidates.end(),
+                  [](const ABAlgorithm::Result &a, const ABAlgorithm::Result &b) {
+                      return a.spikeAmplitude_uV > b.spikeAmplitude_uV;
+                  });
+        if (regionCandidates.size() > perRegionLimit) {
+            regionCandidates.resize(perRegionLimit);
+        }
+    };
+    trimRegionCandidates(candidatesA);
+    trimRegionCandidates(candidatesB);
+
+    QVector<ABAlgorithm::Result> candidates;
+    candidates.reserve(candidatesA.size() + candidatesB.size());
+    candidates += candidatesA;
+    candidates += candidatesB;
 
     std::sort(candidates.begin(), candidates.end(),
               [](const ABAlgorithm::Result &a, const ABAlgorithm::Result &b) {
@@ -274,9 +295,11 @@ void ABExperimentCoordinator::handleEpochReady(int phaseIndex,
     const int finishDelayMs = maxDelayMs + qMax(10, maxPulses * 10);
     finishPhase(finishDelayMs);
 
-    emit logMessage(QStringLiteral("%1: epochId=%2 planned stim count=%3, stim phase ends in %4 ms")
+    emit logMessage(QStringLiteral("%1: epochId=%2 planned stim count=%3 (a=%4, b=%5), stim phase ends in %6 ms")
                         .arg(phaseName)
                         .arg(epochId)
                         .arg(items.size())
+                        .arg(candidatesA.size())
+                        .arg(candidatesB.size())
                         .arg(finishDelayMs));
 }

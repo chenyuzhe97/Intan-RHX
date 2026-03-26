@@ -61,6 +61,39 @@ static QString stimStepSizeDisplayText(StimStepSize step)
     return QStringLiteral("500 nA step size");
 }
 
+static int normalizeClosedLoopMaxStimPerEpochValue(int value)
+{
+    int normalized = qMax(2, value);
+    if ((normalized % 2) != 0) {
+        ++normalized;
+    }
+    return normalized;
+}
+
+static int normalizeClosedLoopStimHardwareChannel(int value)
+{
+    int normalized = qBound(1, value, 15);
+    if ((normalized % 2) == 0) {
+        ++normalized;
+    }
+    if (normalized > 15) {
+        normalized = 15;
+    }
+    return normalized;
+}
+
+static int legacyStimIndexFromHardwareChannel(int hardwareChannel)
+{
+    const int normalized = normalizeClosedLoopStimHardwareChannel(hardwareChannel);
+    return (normalized + 1) / 2;
+}
+
+static int hardwareChannelFromLegacyStimIndex(int legacyIndex)
+{
+    const int normalized = qMax(1, legacyIndex);
+    return normalizeClosedLoopStimHardwareChannel(2 * normalized - 1);
+}
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
@@ -1239,13 +1272,35 @@ void MainWindow::setupElectrodeConfigDock()
     m_spinClosedLoopRounds->setSingleStep(1);
     m_spinClosedLoopRounds->setValue(1);
     m_spinClosedLoopMaxStimPerEpoch = new QSpinBox(gbExperiment);
-    m_spinClosedLoopMaxStimPerEpoch->setRange(1, 1000);
-    m_spinClosedLoopMaxStimPerEpoch->setSingleStep(1);
-    m_spinClosedLoopMaxStimPerEpoch->setValue(m_closedLoopMaxStimPerEpoch);
+    m_spinClosedLoopMaxStimPerEpoch->setRange(2, 1000);
+    m_spinClosedLoopMaxStimPerEpoch->setSingleStep(2);
+    m_spinClosedLoopMaxStimPerEpoch->setValue(normalizeClosedLoopMaxStimPerEpochValue(m_closedLoopMaxStimPerEpoch));
     experimentForm->addRow(tr("AB Epoch 时长"), m_spinEpochSec);
     experimentForm->addRow(tr("Rounds"), m_spinClosedLoopRounds);
-    experimentForm->addRow(QString::fromUtf8(u8"每个 Epoch 最多刺激数"), m_spinClosedLoopMaxStimPerEpoch);
+    experimentForm->addRow(QString::fromUtf8(u8"每个 Epoch 最多刺激数（偶数；a/b 各一半）"), m_spinClosedLoopMaxStimPerEpoch);
     experimentLayout->addLayout(experimentForm);
+
+    QGroupBox *gbClosedLoopFilter = new QGroupBox(tr("闭环算法滤波参数"), panel);
+    QFormLayout *closedLoopFilterLayout = new QFormLayout(gbClosedLoopFilter);
+    m_chkClosedLoopBpEnabled = new QCheckBox(tr("启用闭环算法带通"), gbClosedLoopFilter);
+    m_chkClosedLoopBpEnabled->setChecked(m_closedLoopBpEnabled);
+    m_spinClosedLoopBpLowHz = new QDoubleSpinBox(gbClosedLoopFilter);
+    m_spinClosedLoopBpLowHz->setRange(0.1, 10000.0);
+    m_spinClosedLoopBpLowHz->setDecimals(1);
+    m_spinClosedLoopBpLowHz->setSingleStep(10.0);
+    m_spinClosedLoopBpLowHz->setSuffix(" Hz");
+    m_spinClosedLoopBpLowHz->setValue(m_closedLoopBpLowHz);
+    m_spinClosedLoopBpHighHz = new QDoubleSpinBox(gbClosedLoopFilter);
+    m_spinClosedLoopBpHighHz->setRange(1.0, 20000.0);
+    m_spinClosedLoopBpHighHz->setDecimals(1);
+    m_spinClosedLoopBpHighHz->setSingleStep(50.0);
+    m_spinClosedLoopBpHighHz->setSuffix(" Hz");
+    m_spinClosedLoopBpHighHz->setValue(m_closedLoopBpHighHz);
+    m_spinClosedLoopBpLowHz->setEnabled(m_closedLoopBpEnabled);
+    m_spinClosedLoopBpHighHz->setEnabled(m_closedLoopBpEnabled);
+    closedLoopFilterLayout->addRow(QString(), m_chkClosedLoopBpEnabled);
+    closedLoopFilterLayout->addRow(tr("Band-pass Low"), m_spinClosedLoopBpLowHz);
+    closedLoopFilterLayout->addRow(tr("Band-pass High"), m_spinClosedLoopBpHighHz);
 
     QGroupBox *gbFixedReplay = new QGroupBox(tr("固定刺激实验参数"), panel);
     QFormLayout *fixedReplayLayout = new QFormLayout(gbFixedReplay);
@@ -1279,10 +1334,10 @@ void MainWindow::setupElectrodeConfigDock()
     m_editSense_B_a = new QLineEdit(gbSense);
     m_editSense_B_b = new QLineEdit(gbSense);
 
-    m_editSense_A_a->setPlaceholderText("例如 1,5,7");
-    m_editSense_A_b->setPlaceholderText("例如 9,11,15");
-    m_editSense_B_a->setPlaceholderText("例如 1,5,7");
-    m_editSense_B_b->setPlaceholderText("例如 9,11,15");
+    m_editSense_A_a->setPlaceholderText("例如 1,3,5,7");
+    m_editSense_A_b->setPlaceholderText("例如 9,11,13,15");
+    m_editSense_B_a->setPlaceholderText("例如 1,3,5,7");
+    m_editSense_B_b->setPlaceholderText("例如 9,11,13,15");
 
     senseLayout->addRow(tr("A 鼠 a 区 (stream0)"), m_editSense_A_a);
     senseLayout->addRow(tr("A 鼠 b 区 (stream0)"), m_editSense_A_b);
@@ -1291,6 +1346,9 @@ void MainWindow::setupElectrodeConfigDock()
 
     QGroupBox *gbStim = new QGroupBox(tr("闭环目标刺激电极 (A/B 前缀固定)"), panel);
     QFormLayout *stimLayout = new QFormLayout(gbStim);
+    QLabel *stimTip = new QLabel(QString::fromUtf8(u8"这里直接填写实际奇数通道号，例如 3、13；程序内部会自动换算成对应的刺激电极编号。"), gbStim);
+    stimTip->setWordWrap(true);
+    stimLayout->addRow(stimTip);
 
     auto makeStimEditor = [&](const QString &prefix, QSpinBox *&spinOut) -> QWidget* {
         QWidget *w = new QWidget(gbStim);
@@ -1298,8 +1356,8 @@ void MainWindow::setupElectrodeConfigDock()
         hl->setContentsMargins(0, 0, 0, 0);
         QLabel *lab = new QLabel(prefix, w);
         spinOut = new QSpinBox(w);
-        spinOut->setRange(1, 64);
-        spinOut->setSingleStep(1);
+        spinOut->setRange(1, 15);
+        spinOut->setSingleStep(2);
         hl->addWidget(lab);
         hl->addWidget(spinOut, 1);
         w->setLayout(hl);
@@ -1314,6 +1372,7 @@ void MainWindow::setupElectrodeConfigDock()
     m_btnApplyElectrode = new QPushButton(tr("应用闭环配置"), panel);
 
     root->addWidget(gbExperiment);
+    root->addWidget(gbClosedLoopFilter);
     root->addWidget(gbFixedReplay);
     root->addWidget(gbSense);
     root->addWidget(gbStim);
@@ -1329,25 +1388,40 @@ void MainWindow::setupElectrodeConfigDock()
             this, &MainWindow::applyElectrodeConfigFromUi);
     connect(m_spinEpochSec, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, &MainWindow::onEpochDurationChanged);
+    connect(m_chkClosedLoopBpEnabled, &QCheckBox::toggled, this,
+            [this](bool) {
+                syncExperimentRoutingConfig();
+                saveElectrodeConfig();
+            });
+    connect(m_spinClosedLoopBpLowHz, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double) {
+                syncExperimentRoutingConfig();
+                saveElectrodeConfig();
+            });
+    connect(m_spinClosedLoopBpHighHz, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double) {
+                syncExperimentRoutingConfig();
+                saveElectrodeConfig();
+            });
 
     m_editSense_A_a->setText(formatChannels1Based(kSense_A_a));
     m_editSense_A_b->setText(formatChannels1Based(kSense_A_b));
     m_editSense_B_a->setText(formatChannels1Based(kSense_B_a));
     m_editSense_B_b->setText(formatChannels1Based(kSense_B_b));
 
-    auto parseSuffix = [](const QString &name, const QChar expectedPrefix, int fallback) -> int {
+    auto parseSuffix = [](const QString &name, const QChar expectedPrefix, int fallbackHardwareChannel) -> int {
         if (name.size() >= 2 && name[0] == expectedPrefix) {
             bool ok = false;
             const int n = name.mid(1).toInt(&ok);
-            if (ok && n > 0) return n;
+            if (ok && n > 0) return hardwareChannelFromLegacyStimIndex(n);
         }
-        return fallback;
+        return fallbackHardwareChannel;
     };
 
-    m_spinStim_A_a->setValue(parseSuffix(kStim_A_a, QChar('A'), 2));
-    m_spinStim_A_b->setValue(parseSuffix(kStim_A_b, QChar('A'), 7));
-    m_spinStim_B_a->setValue(parseSuffix(kStim_B_a, QChar('B'), 2));
-    m_spinStim_B_b->setValue(parseSuffix(kStim_B_b, QChar('B'), 7));
+    m_spinStim_A_a->setValue(parseSuffix(kStim_A_a, QChar('A'), 3));
+    m_spinStim_A_b->setValue(parseSuffix(kStim_A_b, QChar('A'), 13));
+    m_spinStim_B_a->setValue(parseSuffix(kStim_B_a, QChar('B'), 3));
+    m_spinStim_B_b->setValue(parseSuffix(kStim_B_b, QChar('B'), 13));
 }
 
 void MainWindow::setupFixedStimDock()
@@ -1475,9 +1549,26 @@ void MainWindow::loadElectrodeConfig()
     }
     if (m_spinClosedLoopMaxStimPerEpoch) {
         m_closedLoopMaxStimPerEpoch =
-            qMax(1, s.value("closed_loop/max_stim_per_epoch", m_closedLoopMaxStimPerEpoch).toInt());
+            normalizeClosedLoopMaxStimPerEpochValue(
+                s.value("closed_loop/max_stim_per_epoch", m_closedLoopMaxStimPerEpoch).toInt());
         QSignalBlocker blocker(m_spinClosedLoopMaxStimPerEpoch);
         m_spinClosedLoopMaxStimPerEpoch->setValue(m_closedLoopMaxStimPerEpoch);
+    }
+    m_closedLoopBpEnabled = s.value("closed_loop/filter_bp_enabled", m_closedLoopBpEnabled).toBool();
+    m_closedLoopBpLowHz = qMax(0.1, s.value("closed_loop/filter_bp_low_hz", m_closedLoopBpLowHz).toDouble());
+    m_closedLoopBpHighHz = qMax(m_closedLoopBpLowHz + 0.1,
+                                s.value("closed_loop/filter_bp_high_hz", m_closedLoopBpHighHz).toDouble());
+    if (m_chkClosedLoopBpEnabled) {
+        QSignalBlocker blocker(m_chkClosedLoopBpEnabled);
+        m_chkClosedLoopBpEnabled->setChecked(m_closedLoopBpEnabled);
+    }
+    if (m_spinClosedLoopBpLowHz) {
+        QSignalBlocker blocker(m_spinClosedLoopBpLowHz);
+        m_spinClosedLoopBpLowHz->setValue(m_closedLoopBpLowHz);
+    }
+    if (m_spinClosedLoopBpHighHz) {
+        QSignalBlocker blocker(m_spinClosedLoopBpHighHz);
+        m_spinClosedLoopBpHighHz->setValue(m_closedLoopBpHighHz);
     }
     if (m_spinFixedStimAmp) {
         const double savedAmp = qMax(0.0, s.value("fixed_stim/amp_uA", m_spinFixedStimAmp->value()).toDouble());
@@ -1530,10 +1621,22 @@ void MainWindow::loadElectrodeConfig()
     m_editSense_B_a->setText(tB_a);
     m_editSense_B_b->setText(tB_b);
 
-    m_spinStim_A_a->setValue(s.value("electrode/stim_A_a_num", m_spinStim_A_a->value()).toInt());
-    m_spinStim_A_b->setValue(s.value("electrode/stim_A_b_num", m_spinStim_A_b->value()).toInt());
-    m_spinStim_B_a->setValue(s.value("electrode/stim_B_a_num", m_spinStim_B_a->value()).toInt());
-    m_spinStim_B_b->setValue(s.value("electrode/stim_B_b_num", m_spinStim_B_b->value()).toInt());
+    const bool stimUiHardwareDirect = s.value("electrode/stim_ui_hardware_channel_direct", false).toBool();
+    auto loadStimUiValue = [&](const QString &key, QSpinBox *spin) {
+        if (!spin) return;
+        int uiValue = spin->value();
+        if (s.contains(key)) {
+            const int savedValue = s.value(key, uiValue).toInt();
+            uiValue = stimUiHardwareDirect
+                          ? normalizeClosedLoopStimHardwareChannel(savedValue)
+                          : hardwareChannelFromLegacyStimIndex(savedValue);
+        }
+        spin->setValue(normalizeClosedLoopStimHardwareChannel(uiValue));
+    };
+    loadStimUiValue("electrode/stim_A_a_num", m_spinStim_A_a);
+    loadStimUiValue("electrode/stim_A_b_num", m_spinStim_A_b);
+    loadStimUiValue("electrode/stim_B_a_num", m_spinStim_B_a);
+    loadStimUiValue("electrode/stim_B_b_num", m_spinStim_B_b);
 
     QString err;
     QVector<int> tmp;
@@ -1543,14 +1646,68 @@ void MainWindow::loadElectrodeConfig()
     if (parseChannels1Based(m_editSense_B_a->text(), tmp, &err)) kSense_B_a = tmp;
     if (parseChannels1Based(m_editSense_B_b->text(), tmp, &err)) kSense_B_b = tmp;
 
-    kStim_A_a = QString("A%1").arg(m_spinStim_A_a->value());
-    kStim_A_b = QString("A%1").arg(m_spinStim_A_b->value());
-    kStim_B_a = QString("B%1").arg(m_spinStim_B_a->value());
-    kStim_B_b = QString("B%1").arg(m_spinStim_B_b->value());
+    kStim_A_a = QString("A%1").arg(legacyStimIndexFromHardwareChannel(m_spinStim_A_a->value()));
+    kStim_A_b = QString("A%1").arg(legacyStimIndexFromHardwareChannel(m_spinStim_A_b->value()));
+    kStim_B_a = QString("B%1").arg(legacyStimIndexFromHardwareChannel(m_spinStim_B_a->value()));
+    kStim_B_b = QString("B%1").arg(legacyStimIndexFromHardwareChannel(m_spinStim_B_b->value()));
 }
 
 void MainWindow::syncExperimentRoutingConfig()
 {
+    if (m_chkClosedLoopBpEnabled) {
+        m_closedLoopBpEnabled = m_chkClosedLoopBpEnabled->isChecked();
+    }
+    if (m_spinClosedLoopMaxStimPerEpoch) {
+        m_closedLoopMaxStimPerEpoch =
+            normalizeClosedLoopMaxStimPerEpochValue(m_spinClosedLoopMaxStimPerEpoch->value());
+        if (m_spinClosedLoopMaxStimPerEpoch->value() != m_closedLoopMaxStimPerEpoch) {
+            QSignalBlocker blocker(m_spinClosedLoopMaxStimPerEpoch);
+            m_spinClosedLoopMaxStimPerEpoch->setValue(m_closedLoopMaxStimPerEpoch);
+        }
+    }
+    if (m_spinClosedLoopBpLowHz) {
+        m_closedLoopBpLowHz = qMax(0.1, m_spinClosedLoopBpLowHz->value());
+    }
+    if (m_spinClosedLoopBpHighHz) {
+        m_closedLoopBpHighHz = qMax(m_closedLoopBpLowHz + 0.1, m_spinClosedLoopBpHighHz->value());
+    }
+
+    if (m_spinClosedLoopBpLowHz && !qFuzzyCompare(m_spinClosedLoopBpLowHz->value() + 1.0, m_closedLoopBpLowHz + 1.0)) {
+        QSignalBlocker blocker(m_spinClosedLoopBpLowHz);
+        m_spinClosedLoopBpLowHz->setValue(m_closedLoopBpLowHz);
+    }
+    if (m_spinClosedLoopBpHighHz && !qFuzzyCompare(m_spinClosedLoopBpHighHz->value() + 1.0, m_closedLoopBpHighHz + 1.0)) {
+        QSignalBlocker blocker(m_spinClosedLoopBpHighHz);
+        m_spinClosedLoopBpHighHz->setValue(m_closedLoopBpHighHz);
+    }
+    if (m_spinClosedLoopBpLowHz) {
+        m_spinClosedLoopBpLowHz->setEnabled(m_closedLoopBpEnabled);
+    }
+    if (m_spinClosedLoopBpHighHz) {
+        m_spinClosedLoopBpHighHz->setEnabled(m_closedLoopBpEnabled);
+    }
+    auto normalizeStimSpin = [](QSpinBox *spin) {
+        if (!spin) return;
+        const int normalized = normalizeClosedLoopStimHardwareChannel(spin->value());
+        if (spin->value() != normalized) {
+            QSignalBlocker blocker(spin);
+            spin->setValue(normalized);
+        }
+    };
+    normalizeStimSpin(m_spinStim_A_a);
+    normalizeStimSpin(m_spinStim_A_b);
+    normalizeStimSpin(m_spinStim_B_a);
+    normalizeStimSpin(m_spinStim_B_b);
+    if (m_spinStim_A_a) kStim_A_a = QString("A%1").arg(legacyStimIndexFromHardwareChannel(m_spinStim_A_a->value()));
+    if (m_spinStim_A_b) kStim_A_b = QString("A%1").arg(legacyStimIndexFromHardwareChannel(m_spinStim_A_b->value()));
+    if (m_spinStim_B_a) kStim_B_a = QString("B%1").arg(legacyStimIndexFromHardwareChannel(m_spinStim_B_a->value()));
+    if (m_spinStim_B_b) kStim_B_b = QString("B%1").arg(legacyStimIndexFromHardwareChannel(m_spinStim_B_b->value()));
+
+    if (m_abAlgo) {
+        m_abAlgo->setBandPassEnabled(m_closedLoopBpEnabled);
+        m_abAlgo->setBandPassHz(m_closedLoopBpLowHz, m_closedLoopBpHighHz);
+    }
+
     if (!m_coordinator) return;
 
     ABExperimentCoordinator::RoutingConfig config;
@@ -1577,7 +1734,15 @@ void MainWindow::saveElectrodeConfig() const
     s.setValue("closed_loop/epoch_sec", m_spinEpochSec ? m_spinEpochSec->value() : colletion_time);
     s.setValue("closed_loop/rounds", m_spinClosedLoopRounds ? m_spinClosedLoopRounds->value() : 1);
     s.setValue("closed_loop/max_stim_per_epoch",
-               m_spinClosedLoopMaxStimPerEpoch ? m_spinClosedLoopMaxStimPerEpoch->value() : m_closedLoopMaxStimPerEpoch);
+               m_spinClosedLoopMaxStimPerEpoch
+                   ? normalizeClosedLoopMaxStimPerEpochValue(m_spinClosedLoopMaxStimPerEpoch->value())
+                   : normalizeClosedLoopMaxStimPerEpochValue(m_closedLoopMaxStimPerEpoch));
+    s.setValue("closed_loop/filter_bp_enabled",
+               m_chkClosedLoopBpEnabled ? m_chkClosedLoopBpEnabled->isChecked() : m_closedLoopBpEnabled);
+    s.setValue("closed_loop/filter_bp_low_hz",
+               m_spinClosedLoopBpLowHz ? m_spinClosedLoopBpLowHz->value() : m_closedLoopBpLowHz);
+    s.setValue("closed_loop/filter_bp_high_hz",
+               m_spinClosedLoopBpHighHz ? m_spinClosedLoopBpHighHz->value() : m_closedLoopBpHighHz);
     s.setValue("fixed_stim/amp_uA", m_spinFixedStimAmp ? m_spinFixedStimAmp->value() : 20);
     s.setValue("fixed_stim/phase_us", m_spinFixedStimPhaseUs ? m_spinFixedStimPhaseUs->value() : 500);
     s.setValue("fixed_stim/freq_hz", m_spinFixedStimFreqHz ? m_spinFixedStimFreqHz->value() : 10.0);
@@ -1591,10 +1756,11 @@ void MainWindow::saveElectrodeConfig() const
     s.setValue("electrode/sense_B_a", m_editSense_B_a->text().trimmed());
     s.setValue("electrode/sense_B_b", m_editSense_B_b->text().trimmed());
 
-    s.setValue("electrode/stim_A_a_num", m_spinStim_A_a->value());
-    s.setValue("electrode/stim_A_b_num", m_spinStim_A_b->value());
-    s.setValue("electrode/stim_B_a_num", m_spinStim_B_a->value());
-    s.setValue("electrode/stim_B_b_num", m_spinStim_B_b->value());
+    s.setValue("electrode/stim_ui_hardware_channel_direct", true);
+    s.setValue("electrode/stim_A_a_num", normalizeClosedLoopStimHardwareChannel(m_spinStim_A_a->value()));
+    s.setValue("electrode/stim_A_b_num", normalizeClosedLoopStimHardwareChannel(m_spinStim_A_b->value()));
+    s.setValue("electrode/stim_B_a_num", normalizeClosedLoopStimHardwareChannel(m_spinStim_B_a->value()));
+    s.setValue("electrode/stim_B_b_num", normalizeClosedLoopStimHardwareChannel(m_spinStim_B_b->value()));
 }
 
 void MainWindow::loadSessionConfig()
@@ -1769,6 +1935,9 @@ bool MainWindow::writeStimPlanJson(qint64 durationMs) const
     root["rounds_target"] = m_spinClosedLoopRounds ? m_spinClosedLoopRounds->value() : 1;
     root["rounds_completed"] = m_closedLoopCompletedRounds;
     root["max_stim_per_epoch"] = m_closedLoopMaxStimPerEpoch;
+    root["filter_bp_enabled"] = m_closedLoopBpEnabled;
+    root["filter_bp_low_hz"] = m_closedLoopBpLowHz;
+    root["filter_bp_high_hz"] = m_closedLoopBpHighHz;
     root["stim_step_size_enum"] = int(selectedStimStepSize());
     root["stim_step_size"] = stimStepSizeDisplayText(selectedStimStepSize());
     root["recording_file"] = QFileInfo(m_activeRecordingPath).fileName();
@@ -1912,28 +2081,52 @@ void MainWindow::applyElectrodeConfigFromUi()
     }
     kSense_B_b = tmp;
 
-    kStim_A_a = QString("A%1").arg(m_spinStim_A_a->value());
-    kStim_A_b = QString("A%1").arg(m_spinStim_A_b->value());
-    kStim_B_a = QString("B%1").arg(m_spinStim_B_a->value());
-    kStim_B_b = QString("B%1").arg(m_spinStim_B_b->value());
+    if (m_spinStim_A_a) m_spinStim_A_a->setValue(normalizeClosedLoopStimHardwareChannel(m_spinStim_A_a->value()));
+    if (m_spinStim_A_b) m_spinStim_A_b->setValue(normalizeClosedLoopStimHardwareChannel(m_spinStim_A_b->value()));
+    if (m_spinStim_B_a) m_spinStim_B_a->setValue(normalizeClosedLoopStimHardwareChannel(m_spinStim_B_a->value()));
+    if (m_spinStim_B_b) m_spinStim_B_b->setValue(normalizeClosedLoopStimHardwareChannel(m_spinStim_B_b->value()));
+
+    kStim_A_a = QString("A%1").arg(legacyStimIndexFromHardwareChannel(m_spinStim_A_a->value()));
+    kStim_A_b = QString("A%1").arg(legacyStimIndexFromHardwareChannel(m_spinStim_A_b->value()));
+    kStim_B_a = QString("B%1").arg(legacyStimIndexFromHardwareChannel(m_spinStim_B_a->value()));
+    kStim_B_b = QString("B%1").arg(legacyStimIndexFromHardwareChannel(m_spinStim_B_b->value()));
     m_closedLoopMaxStimPerEpoch = m_spinClosedLoopMaxStimPerEpoch
-                                      ? m_spinClosedLoopMaxStimPerEpoch->value()
+                                      ? normalizeClosedLoopMaxStimPerEpochValue(m_spinClosedLoopMaxStimPerEpoch->value())
                                       : m_closedLoopMaxStimPerEpoch;
+    if (m_spinClosedLoopMaxStimPerEpoch) {
+        m_spinClosedLoopMaxStimPerEpoch->setValue(m_closedLoopMaxStimPerEpoch);
+    }
+    m_closedLoopBpEnabled = m_chkClosedLoopBpEnabled
+                                ? m_chkClosedLoopBpEnabled->isChecked()
+                                : m_closedLoopBpEnabled;
+    m_closedLoopBpLowHz = m_spinClosedLoopBpLowHz
+                              ? m_spinClosedLoopBpLowHz->value()
+                              : m_closedLoopBpLowHz;
+    m_closedLoopBpHighHz = m_spinClosedLoopBpHighHz
+                               ? m_spinClosedLoopBpHighHz->value()
+                               : m_closedLoopBpHighHz;
 
     saveElectrodeConfig();
     syncExperimentRoutingConfig();
 
-    appendLog(QStringLiteral("闭环实验配置已应用：Epoch=%1 s | MaxStim/Epoch=%2 | SenseA(a)=[%3] SenseA(b)=[%4] SenseB(a')=[%5] SenseB(b')=[%6] | StimA(a)=%7 StimA(b)=%8 StimB(a')=%9 StimB(b')=%10")
+    const QString algoBpText = m_closedLoopBpEnabled
+                                   ? QStringLiteral("%1-%2 Hz")
+                                         .arg(m_closedLoopBpLowHz, 0, 'f', 1)
+                                         .arg(m_closedLoopBpHighHz, 0, 'f', 1)
+                                   : QStringLiteral("OFF");
+
+    appendLog(QStringLiteral("闭环实验配置已应用：Epoch=%1 s | MaxStim/Epoch=%2 | Algo BP=%3 | SenseA(a)=[%4] SenseA(b)=[%5] SenseB(a')=[%6] SenseB(b')=[%7] | StimA(a)=A%8 StimA(b)=A%9 StimB(a')=B%10 StimB(b')=B%11")
                   .arg(colletion_time, 0, 'f', 2)
                   .arg(m_closedLoopMaxStimPerEpoch)
+                  .arg(algoBpText)
                   .arg(formatChannels1Based(kSense_A_a))
                   .arg(formatChannels1Based(kSense_A_b))
                   .arg(formatChannels1Based(kSense_B_a))
                   .arg(formatChannels1Based(kSense_B_b))
-                  .arg(kStim_A_a)
-                  .arg(kStim_A_b)
-                  .arg(kStim_B_a)
-                  .arg(kStim_B_b));
+                  .arg(m_spinStim_A_a ? m_spinStim_A_a->value() : normalizeClosedLoopStimHardwareChannel(hardwareChannelFromLegacyStimIndex(2)))
+                  .arg(m_spinStim_A_b ? m_spinStim_A_b->value() : normalizeClosedLoopStimHardwareChannel(hardwareChannelFromLegacyStimIndex(7)))
+                  .arg(m_spinStim_B_a ? m_spinStim_B_a->value() : normalizeClosedLoopStimHardwareChannel(hardwareChannelFromLegacyStimIndex(2)))
+                  .arg(m_spinStim_B_b ? m_spinStim_B_b->value() : normalizeClosedLoopStimHardwareChannel(hardwareChannelFromLegacyStimIndex(7))));
 }
 void MainWindow::applyDspSettings()
 {
@@ -2115,8 +2308,20 @@ void MainWindow::onStartClosedLoop()
     commitManualStimEdits();
     saveManualStimConfig();
     m_closedLoopMaxStimPerEpoch = m_spinClosedLoopMaxStimPerEpoch
-                                      ? m_spinClosedLoopMaxStimPerEpoch->value()
+                                      ? normalizeClosedLoopMaxStimPerEpochValue(m_spinClosedLoopMaxStimPerEpoch->value())
                                       : m_closedLoopMaxStimPerEpoch;
+    if (m_spinClosedLoopMaxStimPerEpoch) {
+        m_spinClosedLoopMaxStimPerEpoch->setValue(m_closedLoopMaxStimPerEpoch);
+    }
+    m_closedLoopBpEnabled = m_chkClosedLoopBpEnabled
+                                ? m_chkClosedLoopBpEnabled->isChecked()
+                                : m_closedLoopBpEnabled;
+    m_closedLoopBpLowHz = m_spinClosedLoopBpLowHz
+                              ? m_spinClosedLoopBpLowHz->value()
+                              : m_closedLoopBpLowHz;
+    m_closedLoopBpHighHz = m_spinClosedLoopBpHighHz
+                               ? m_spinClosedLoopBpHighHz->value()
+                               : m_closedLoopBpHighHz;
     saveElectrodeConfig();
     syncExperimentRoutingConfig();
     if (!ensureStimStepSizeAppliedForMode(QStringLiteral("闭环实验"))) {
@@ -2183,14 +2388,22 @@ void MainWindow::onStartClosedLoop()
         ensureTimelineVisible();
     }
 
+    const QString algoBpText = m_closedLoopBpEnabled
+                                   ? QStringLiteral("%1-%2 Hz")
+                                         .arg(m_closedLoopBpLowHz, 0, 'f', 1)
+                                         .arg(m_closedLoopBpHighHz, 0, 'f', 1)
+                                   : QStringLiteral("OFF");
+
     if (!wasAcquiring) {
-        appendLog(QString("已开始闭环实验采集：AB epoch=%1 s, MaxStim/Epoch=%2")
+        appendLog(QString("已开始闭环实验采集：AB epoch=%1 s, MaxStim/Epoch=%2, Algo BP=%3")
                       .arg(colletion_time, 0, 'f', 2)
-                      .arg(m_closedLoopMaxStimPerEpoch));
+                      .arg(m_closedLoopMaxStimPerEpoch)
+                      .arg(algoBpText));
     } else {
-        appendLog(QString("已在当前采集上启动闭环实验：AB epoch=%1 s, MaxStim/Epoch=%2")
+        appendLog(QString("已在当前采集上启动闭环实验：AB epoch=%1 s, MaxStim/Epoch=%2, Algo BP=%3")
                       .arg(colletion_time, 0, 'f', 2)
-                      .arg(m_closedLoopMaxStimPerEpoch));
+                      .arg(m_closedLoopMaxStimPerEpoch)
+                      .arg(algoBpText));
     }
 }
 
