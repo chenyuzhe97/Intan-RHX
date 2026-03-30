@@ -230,9 +230,23 @@ void AcquisitionEngine::inspectTimestampBatch(const char *streamTag,
 void AcquisitionEngine::enqueueBlockForRecording(RHXDataBlock *block)
 {
     if (!block) return;
+    size_t queueSize = 0;
     {
         std::lock_guard<std::mutex> lock(m_recordQueueMutex);
         m_recordQueue.push_back(block);
+        queueSize = m_recordQueue.size();
+    }
+    if (queueSize > m_recordQueueHighWatermark) {
+        m_recordQueueHighWatermark = queueSize;
+    }
+    const size_t warnStepBlocks = 256;
+    if (queueSize >= warnStepBlocks) {
+        const size_t warnLevel = queueSize / warnStepBlocks;
+        if (warnLevel > m_recordQueueLastWarnLevel) {
+            m_recordQueueLastWarnLevel = warnLevel;
+            emit logMessage(QStringLiteral("录制写盘积压：待写数据块=%1，长时间持续增大可能导致内存占用过高")
+                                .arg(queueSize));
+        }
     }
     m_recordQueueCv.notify_one();
 }
@@ -259,6 +273,10 @@ void AcquisitionEngine::recordingWorkerLoop()
         }
 
         writeBlockToRecording(block);
+        ++m_recordBlocksSinceFlush;
+        if (m_recordStream.is_open() && (m_recordBlocksSinceFlush == 1 || (m_recordBlocksSinceFlush % 64) == 0)) {
+            m_recordStream.flush();
+        }
         delete block;
     }
 }
@@ -290,8 +308,12 @@ void AcquisitionEngine::cleanup()
     m_continuousRunning = false;
     m_isRecording = false;
     m_appliedStimStepSize = StimStepSizeUnrecognized;
+    m_recordQueueHighWatermark = 0;
+    m_recordQueueLastWarnLevel = 0;
+    m_recordBlocksSinceFlush = 0;
     stopRecordingWorker();
     if (m_recordStream.is_open()) {
+        m_recordStream.flush();
         m_recordStream.close();
     }
     m_recordNumStreams = 0;
@@ -863,7 +885,7 @@ bool AcquisitionEngine::startBinaryRecording(const QString &filePath)
     stopRecordingWorker();
 
     m_recordStream.open(filePath.toStdString(),
-                        std::ios::binary | std::ios::out);
+                        std::ios::binary | std::ios::out | std::ios::trunc);
 
     if (!m_recordStream.is_open()) {
         emit errorOccurred(QStringLiteral("无法打开录制文件：") + filePath);
@@ -871,6 +893,9 @@ bool AcquisitionEngine::startBinaryRecording(const QString &filePath)
     }
 
     m_recordNumStreams = m_rhxController->getNumEnabledDataStreams();
+    m_recordQueueHighWatermark = 0;
+    m_recordQueueLastWarnLevel = 0;
+    m_recordBlocksSinceFlush = 0;
     m_recordWorker = std::thread(&AcquisitionEngine::recordingWorkerLoop, this);
     m_isRecording = true;
     emit logMessage(QStringLiteral("开始录制到文件：") + filePath);
@@ -887,8 +912,10 @@ void AcquisitionEngine::stopBinaryRecording()
     m_recordNumStreams = 0;
 
     if (m_recordStream.is_open()) {
+        m_recordStream.flush();
         m_recordStream.close();
     }
 
+    emit logMessage(QStringLiteral("录制队列峰值=%1 blocks").arg(m_recordQueueHighWatermark));
     emit logMessage("录制已停止");
 }

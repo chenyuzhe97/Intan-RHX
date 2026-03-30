@@ -157,6 +157,9 @@ private:
     std::deque<RHXDataBlock*> m_recordQueue;
     bool                     m_recordWorkerStopRequested = false;
     int                      m_recordNumStreams = 0;
+    size_t                   m_recordQueueHighWatermark = 0;
+    size_t                   m_recordQueueLastWarnLevel = 0;
+    size_t                   m_recordBlocksSinceFlush = 0;
 
     QTimer                     m_usbTimer;
     std::deque<RHXDataBlock*>  m_dataQueue;
