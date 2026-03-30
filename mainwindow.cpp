@@ -2432,6 +2432,29 @@ void MainWindow::stopVoidStimReplay(bool logMessage)
     }
 }
 
+void MainWindow::finishManagedExperimentWithReminder(const QString &experimentName,
+                                                     const QString &detail)
+{
+    const QString finishedAt = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+    QTimer::singleShot(0, this, [this, experimentName, detail, finishedAt]() {
+        onStop();
+
+        QString text = QStringLiteral("%1已完成。").arg(experimentName);
+        text += QStringLiteral("\n完成时间：%1").arg(finishedAt);
+        if (!detail.trimmed().isEmpty()) {
+            text += QStringLiteral("\n%1").arg(detail.trimmed());
+        }
+
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Information);
+        box.setWindowTitle(QStringLiteral("实验完成提醒"));
+        box.setText(text);
+        box.setStandardButtons(QMessageBox::Ok);
+        box.setDefaultButton(QMessageBox::Ok);
+        box.exec();
+    });
+}
+
 void MainWindow::applyElectrodeConfigFromUi()
 {
     QString err;
@@ -3789,15 +3812,15 @@ void MainWindow::onClosedLoopExperimentCompleted(int completedRounds)
     m_closedLoopCompletedRounds = completedRounds;
     appendLog(QStringLiteral("Closed-loop experiment completed after %1 round(s); stopping managed recording and returning to continuous acquisition.")
                   .arg(completedRounds));
-
-    QTimer::singleShot(0, this, [this]() { onStop(); });
+    finishManagedExperimentWithReminder(QStringLiteral("实验一：闭环实验采集"),
+                                        QStringLiteral("完成轮次：%1").arg(completedRounds));
 }
 
 void MainWindow::onVoidStimReplayCompleted()
 {
     if (!m_voidStimActive) return;
     appendLog(QStringLiteral("Virtual stimulation replay completed; stopping managed recording and returning to continuous acquisition."));
-    QTimer::singleShot(0, this, [this]() { onStop(); });
+    finishManagedExperimentWithReminder(QStringLiteral("实验三：虚空刺激"));
 }
 
 void MainWindow::onFixedStimReplayCompleted()
@@ -3805,10 +3828,11 @@ void MainWindow::onFixedStimReplayCompleted()
     if (!m_voidStimActive) return;
     if (m_managedSessionMode == ManagedSessionMode::FixedStimDual) {
         appendLog(QStringLiteral("Dual fixed-stim experiment completed; stopping managed recording and returning to continuous acquisition."));
+        finishManagedExperimentWithReminder(QStringLiteral("实验2.2：双固定刺激实验"));
     } else {
         appendLog(QStringLiteral("Fixed-stim experiment completed; stopping managed recording and returning to continuous acquisition."));
+        finishManagedExperimentWithReminder(QStringLiteral("实验二：固定刺激实验"));
     }
-    QTimer::singleShot(0, this, [this]() { onStop(); });
 }
 
 void MainWindow::handleError(const QString &msg)

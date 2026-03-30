@@ -136,6 +136,8 @@ private:
     bool writeFixedStimSessionJson(qint64 durationMs) const;
     bool loadStimPlanJson(const QString &filePath, QByteArray *jsonBytes = nullptr) const;
     void stopVoidStimReplay(bool logMessage);
+    void finishManagedExperimentWithReminder(const QString &experimentName,
+                                             const QString &detail = QString());
 
 private:
     struct StimEventRecord {
