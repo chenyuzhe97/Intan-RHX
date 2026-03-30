@@ -871,6 +871,122 @@ void AcquisitionEngine::applyFixedTrainStim(const QString &electrodeName,
     }
 }
 
+void AcquisitionEngine::applyDualFixedTrainStim(const QString &electrodeNameA,
+                                                double amplitudeA_uA,
+                                                int phaseA_us,
+                                                double frequencyA_hz,
+                                                const QString &electrodeNameB,
+                                                double amplitudeB_uA,
+                                                int phaseB_us,
+                                                double frequencyB_hz,
+                                                int duration_ms,
+                                                int triggerSource)
+{
+    if (!m_deviceOpened || !m_stimController) return;
+    if (duration_ms <= 0 || triggerSource < 0) return;
+    if (electrodeNameA.isEmpty() || electrodeNameB.isEmpty()) return;
+    if (amplitudeA_uA <= 0.0 || phaseA_us <= 0 || frequencyA_hz <= 0.0) return;
+    if (amplitudeB_uA <= 0.0 || phaseB_us <= 0 || frequencyB_hz <= 0.0) return;
+
+    struct DualTrainSpec {
+        QString electrodeName;
+        double amplitude_uA = 0.0;
+        int phase_us = 0;
+        double frequency_hz = 0.0;
+        int period_us = 0;
+        int pulses = 0;
+        int refractory_us = 0;
+        int amplitude_nA = 0;
+    };
+
+    auto buildSpec = [duration_ms](const QString &electrodeName,
+                                   double amplitude_uA,
+                                   int phase_us,
+                                   double frequency_hz,
+                                   DualTrainSpec *out,
+                                   QString *err) -> bool {
+        if (!out) return false;
+        const int period_us = qMax(1, qRound(1000000.0 / frequency_hz));
+        const int stimActive_us = phase_us * 2;
+        if (period_us <= stimActive_us) {
+            if (err) {
+                *err = QStringLiteral("%1: freq=%2 Hz, phase=%3 us")
+                           .arg(electrodeName)
+                           .arg(frequency_hz, 0, 'f', 3)
+                           .arg(phase_us);
+            }
+            return false;
+        }
+        out->electrodeName = electrodeName;
+        out->amplitude_uA = amplitude_uA;
+        out->phase_us = phase_us;
+        out->frequency_hz = frequency_hz;
+        out->period_us = period_us;
+        out->pulses = qMax(1, qRound((duration_ms / 1000.0) * frequency_hz));
+        out->refractory_us = qMax(0, period_us - stimActive_us);
+        out->amplitude_nA = qMax(1, qRound(amplitude_uA * 1000.0));
+        return true;
+    };
+
+    DualTrainSpec specA;
+    DualTrainSpec specB;
+    QString invalidSpec;
+    if (!buildSpec(electrodeNameA, amplitudeA_uA, phaseA_us, frequencyA_hz, &specA, &invalidSpec) ||
+        !buildSpec(electrodeNameB, amplitudeB_uA, phaseB_us, frequencyB_hz, &specB, &invalidSpec)) {
+        emit errorOccurred(QStringLiteral("Dual fixed-stim frequency too high for the selected phase width: %1")
+                               .arg(invalidSpec));
+        return;
+    }
+
+    const bool resumeAfter = m_continuousRunning;
+    if (resumeAfter) {
+        emit logMessage("Dual fixed-stim train: updating stimulation parameters...");
+        pauseContinuousForStim();
+    }
+
+    auto configureOne = [this, triggerSource](const DualTrainSpec &spec) {
+        ElectrodeParameters *ele =
+            new ElectrodeParameters(spec.electrodeName.toStdString());
+
+        ele->SetStimulationTiming(0,
+                                  spec.phase_us,
+                                  spec.phase_us,
+                                  spec.refractory_us);
+        ele->interphaseDelay = 0;
+        ele->refractoryPeriod = spec.refractory_us;
+        ele->pulseOrTrain = (spec.pulses > 1) ? 1 : 0;
+        ele->pulseTrainPeriod = spec.period_us;
+        ele->numOfPulses = spec.pulses;
+        ele->SetStimulationAmplitude(spec.amplitude_nA, spec.amplitude_nA);
+        ele->SetStimulationSource(triggerSource);
+        m_stimController->setStimSequenceParameters(ele);
+    };
+
+    configureOne(specA);
+    configureOne(specB);
+    m_rhxController->setStimCmdMode(true);
+
+    m_stimController->stimTrigger(triggerSource, true);
+    m_stimController->stimTrigger(triggerSource, false);
+
+    emit logMessage(QStringLiteral("Dual fixed-stim train started: A=%1 (%2 uA, %3 us, %4 Hz, pulses=%5), B=%6 (%7 uA, %8 us, %9 Hz, pulses=%10), trigger=%11")
+                        .arg(specA.electrodeName)
+                        .arg(specA.amplitude_uA, 0, 'f', 3)
+                        .arg(specA.phase_us)
+                        .arg(specA.frequency_hz, 0, 'f', 3)
+                        .arg(specA.pulses)
+                        .arg(specB.electrodeName)
+                        .arg(specB.amplitude_uA, 0, 'f', 3)
+                        .arg(specB.phase_us)
+                        .arg(specB.frequency_hz, 0, 'f', 3)
+                        .arg(specB.pulses)
+                        .arg(triggerSource));
+
+    if (resumeAfter) {
+        resumeContinuousAfterStim();
+    }
+}
+
 bool AcquisitionEngine::startBinaryRecording(const QString &filePath)
 {
     if (!m_deviceOpened) {

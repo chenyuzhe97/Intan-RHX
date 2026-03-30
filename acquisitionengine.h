@@ -85,6 +85,16 @@ public:
                              double frequency_hz,
                              int duration_ms,
                              int triggerSource);
+    void applyDualFixedTrainStim(const QString &electrodeNameA,
+                                 double amplitudeA_uA,
+                                 int phaseA_us,
+                                 double frequencyA_hz,
+                                 const QString &electrodeNameB,
+                                 double amplitudeB_uA,
+                                 int phaseB_us,
+                                 double frequencyB_hz,
+                                 int duration_ms,
+                                 int triggerSource);
 
     // 暴露底层指针
     RHXController* rhx() const { return m_rhxController; }

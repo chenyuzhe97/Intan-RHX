@@ -43,6 +43,7 @@ private slots:
     void onStartClosedLoop();
     void onVoidStim();
     void onFixedStimExperiment();
+    void onDualFixedStimExperiment();
     void onStop();
     void onRecStart();
     void onRecStop();
@@ -122,6 +123,7 @@ private:
     void saveElectrodeConfig() const;
     void loadSessionConfig();
     void saveSessionConfig() const;
+    void updateDualFixedStimParamModeUi();
 
     static QString formatChannels1Based(const QVector<int> &zeroBased);
     static bool parseChannels1Based(const QString &text, QVector<int> &outZeroBased, QString *err = nullptr);
@@ -144,6 +146,8 @@ private:
         qint64 firedTimeMs = -1;
         QString electrode;
         int amp_uA = 0;
+        int phaseUs = 0;
+        double frequencyHz = 0.0;
         int pulses = 0;
         int ch = -1;
         double spike_uV = 0.0;
@@ -154,7 +158,8 @@ private:
         None,
         ClosedLoop,
         VoidStim,
-        FixedStim
+        FixedStim,
+        FixedStimDual
     };
 
     QWidget        *m_central = nullptr;
@@ -167,6 +172,7 @@ private:
     QPushButton    *m_btnStartClosedLoop = nullptr;
     QPushButton    *m_btnVoidStim        = nullptr;
     QPushButton    *m_btnFixedStim       = nullptr;
+    QPushButton    *m_btnDualFixedStim   = nullptr;
     QPushButton    *m_btnStop            = nullptr;
     QPushButton    *m_btnStimOnce        = nullptr;
     QPushButton    *m_btnRecStart        = nullptr;
@@ -263,6 +269,17 @@ private:
     qint64             m_activeFixedStimWindowMs = 60000;
     qint64             m_activeFixedStimCollectPostMs = 60000;
     qint64             m_activeFixedStimIdleMs = 60000;
+    bool               m_activeDualFixedSharedParams = true;
+    QString            m_activeDualFixedStimElectrodeA;
+    QString            m_activeDualFixedStimElectrodeB;
+    double             m_activeDualFixedStimAmpA_uA = 0.0;
+    double             m_activeDualFixedStimAmpB_uA = 0.0;
+    int                m_activeDualFixedStimPhaseAUs = 0;
+    int                m_activeDualFixedStimPhaseBUs = 0;
+    double             m_activeDualFixedStimFreqAHz = 0.0;
+    double             m_activeDualFixedStimFreqBHz = 0.0;
+    int                m_activeDualFixedStimPulsesPerTrainA = 0;
+    int                m_activeDualFixedStimPulsesPerTrainB = 0;
 
     // ====== 普通采集刺激配置 ======
     QDockWidget *m_dockManualStim = nullptr;
@@ -313,6 +330,16 @@ private:
     QDoubleSpinBox *m_spinFixedStimFreqHz = nullptr;
     QSpinBox  *m_spinFixedStimRounds = nullptr;
     QSpinBox  *m_spinFixedStimElectrode = nullptr;
+    QSpinBox  *m_spinDualFixedStimElectrodeA = nullptr;
+    QSpinBox  *m_spinDualFixedStimElectrodeB = nullptr;
+    QCheckBox *m_chkDualFixedSharedParams = nullptr;
+    QDoubleSpinBox *m_spinDualFixedStimAmpA = nullptr;
+    QSpinBox  *m_spinDualFixedStimPhaseUsA = nullptr;
+    QDoubleSpinBox *m_spinDualFixedStimFreqHzA = nullptr;
+    QDoubleSpinBox *m_spinDualFixedStimAmpB = nullptr;
+    QSpinBox  *m_spinDualFixedStimPhaseUsB = nullptr;
+    QDoubleSpinBox *m_spinDualFixedStimFreqHzB = nullptr;
+    QWidget   *m_dualFixedIndependentParamsWidget = nullptr;
     QDoubleSpinBox *m_spinFixedStimCollectPreSec = nullptr;
     QDoubleSpinBox *m_spinFixedStimWindowSec = nullptr;
     QDoubleSpinBox *m_spinFixedStimCollectPostSec = nullptr;
