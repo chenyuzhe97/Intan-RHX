@@ -112,6 +112,11 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
     setupUi();
+    m_experimentProgressTimer = new QTimer(this);
+    m_experimentProgressTimer->setInterval(250);
+    connect(m_experimentProgressTimer, &QTimer::timeout,
+            this, &MainWindow::refreshManagedExperimentProgress);
+    stopManagedExperimentProgress();
 
     setupManualStimDock();
     loadManualStimConfig();
@@ -392,6 +397,17 @@ void MainWindow::setupUi()
         QGroupBox#controlCard {
             background: #101921;
         }
+        QProgressBar {
+            background: #0f171d;
+            border: 1px solid #29404f;
+            border-radius: 8px;
+            text-align: center;
+            min-height: 20px;
+        }
+        QProgressBar::chunk {
+            background: #2aa198;
+            border-radius: 6px;
+        }
         QSplitter::handle {
             background: #11202a;
             width: 8px;
@@ -490,6 +506,13 @@ void MainWindow::setupUi()
         experimentLayout->addWidget(m_btnFixedStim, 1, 1);
         experimentLayout->addWidget(m_btnDualFixedStim, 1, 2);
         experimentLayout->addWidget(m_btnVoidStim, 1, 3);
+        m_lblExperimentProgress = new QLabel(QString::fromUtf8(u8"当前实验：空闲"), experimentCard);
+        m_progressExperiment = new QProgressBar(experimentCard);
+        m_progressExperiment->setRange(0, 1000);
+        m_progressExperiment->setValue(0);
+        m_progressExperiment->setFormat(QString::fromUtf8(u8"未运行"));
+        experimentLayout->addWidget(m_lblExperimentProgress, 2, 0, 1, 4);
+        experimentLayout->addWidget(m_progressExperiment, 3, 0, 1, 4);
 
         QGroupBox *acquisitionCard = new QGroupBox(QString::fromUtf8(u8"采集控制"), controlDeck);
         acquisitionCard->setObjectName("controlCard");
@@ -2455,6 +2478,78 @@ void MainWindow::finishManagedExperimentWithReminder(const QString &experimentNa
     });
 }
 
+QString MainWindow::formatDurationForUi(qint64 durationMs)
+{
+    const qint64 totalSeconds = qMax<qint64>(0, durationMs / 1000);
+    const qint64 hours = totalSeconds / 3600;
+    const qint64 minutes = (totalSeconds % 3600) / 60;
+    const qint64 seconds = totalSeconds % 60;
+    if (hours > 0) {
+        return QStringLiteral("%1:%2:%3")
+            .arg(hours, 2, 10, QLatin1Char('0'))
+            .arg(minutes, 2, 10, QLatin1Char('0'))
+            .arg(seconds, 2, 10, QLatin1Char('0'));
+    }
+    return QStringLiteral("%1:%2")
+        .arg(minutes, 2, 10, QLatin1Char('0'))
+        .arg(seconds, 2, 10, QLatin1Char('0'));
+}
+
+void MainWindow::startManagedExperimentProgress(const QString &experimentName, qint64 totalDurationMs)
+{
+    m_activeExperimentProgressName = experimentName;
+    m_activeExperimentProgressDurationMs = qMax<qint64>(1, totalDurationMs);
+    refreshManagedExperimentProgress();
+    if (m_experimentProgressTimer && !m_experimentProgressTimer->isActive()) {
+        m_experimentProgressTimer->start();
+    }
+}
+
+void MainWindow::stopManagedExperimentProgress()
+{
+    if (m_experimentProgressTimer) {
+        m_experimentProgressTimer->stop();
+    }
+    m_activeExperimentProgressName.clear();
+    m_activeExperimentProgressDurationMs = 0;
+    if (m_lblExperimentProgress) {
+        m_lblExperimentProgress->setText(QString::fromUtf8(u8"当前实验：空闲"));
+    }
+    if (m_progressExperiment) {
+        m_progressExperiment->setRange(0, 1000);
+        m_progressExperiment->setValue(0);
+        m_progressExperiment->setFormat(QString::fromUtf8(u8"未运行"));
+    }
+}
+
+void MainWindow::refreshManagedExperimentProgress()
+{
+    if (!m_lblExperimentProgress || !m_progressExperiment) {
+        return;
+    }
+    if (m_activeExperimentProgressDurationMs <= 0 || !m_managedSessionClockActive) {
+        stopManagedExperimentProgress();
+        return;
+    }
+
+    const qint64 elapsedMs = qMax<qint64>(0, m_managedSessionClock.elapsed());
+    const qint64 totalMs = qMax<qint64>(1, m_activeExperimentProgressDurationMs);
+    const qint64 clampedElapsedMs = qMin(elapsedMs, totalMs);
+    const qint64 remainingMs = qMax<qint64>(0, totalMs - elapsedMs);
+    const int progressValue = int((clampedElapsedMs * 1000) / totalMs);
+
+    m_lblExperimentProgress->setText(
+        QString::fromUtf8(u8"%1  已用 %2 / 总 %3  剩余 %4")
+            .arg(m_activeExperimentProgressName.isEmpty()
+                     ? QString::fromUtf8(u8"当前实验")
+                     : m_activeExperimentProgressName)
+            .arg(formatDurationForUi(clampedElapsedMs))
+            .arg(formatDurationForUi(totalMs))
+            .arg(formatDurationForUi(remainingMs)));
+    m_progressExperiment->setValue(progressValue);
+    m_progressExperiment->setFormat(QStringLiteral("%1%").arg(progressValue / 10.0, 0, 'f', 1));
+}
+
 void MainWindow::applyElectrodeConfigFromUi()
 {
     QString err;
@@ -2791,12 +2886,15 @@ void MainWindow::onStartClosedLoop()
         return;
     }
 
+    const int closedLoopTargetRounds = m_spinClosedLoopRounds ? m_spinClosedLoopRounds->value() : 1;
     if (m_experiment) {
         m_experiment->setEpochDuration(colletion_time);
-        m_experiment->setTargetRounds(m_spinClosedLoopRounds ? m_spinClosedLoopRounds->value() : 1);
+        m_experiment->setTargetRounds(closedLoopTargetRounds);
         m_experiment->start();
     }
     m_closedLoopExperimentActive = true;
+    startManagedExperimentProgress(QString::fromUtf8(u8"实验一：闭环实验采集"),
+                                   qMax<qint64>(1, qRound64(double(closedLoopTargetRounds) * colletion_time * 2000.0)));
 
     if (m_timeline) {
         m_timeline->setEpochSec(colletion_time);
@@ -3044,6 +3142,7 @@ void MainWindow::onVoidStim()
     m_managedSessionClockActive = true;
     m_voidStimActive = true;
     m_closedLoopExperimentActive = false;
+    startManagedExperimentProgress(QString::fromUtf8(u8"实验三：虚空刺激"), experimentDurationMs);
 
     if (m_timeline) {
         QVector<StimTimelineOverlay::Item> items;
@@ -3204,6 +3303,7 @@ void MainWindow::onFixedStimExperiment()
     m_managedSessionClockActive = true;
     m_voidStimActive = true;
     m_closedLoopExperimentActive = false;
+    startManagedExperimentProgress(QString::fromUtf8(u8"实验二：固定刺激实验"), experimentDurationMs);
     m_activeFixedStimElectrode = electrodeNameDisplay;
     m_activeFixedStimAmp_uA = fixedAmp_uA;
     m_activeFixedStimPhaseUs = fixedPhaseUs;
@@ -3397,6 +3497,7 @@ void MainWindow::onDualFixedStimExperiment()
     m_managedSessionClockActive = true;
     m_voidStimActive = true;
     m_closedLoopExperimentActive = false;
+    startManagedExperimentProgress(QString::fromUtf8(u8"实验2.2：双固定刺激实验"), experimentDurationMs);
     m_activeFixedStimElectrode.clear();
     m_activeFixedStimAmp_uA = 0.0;
     m_activeFixedStimPhaseUs = 0;
@@ -3562,6 +3663,7 @@ void MainWindow::onStop()
     else if (m_timeline) m_timeline->hide();
 
     finalizeManagedSession();
+    stopManagedExperimentProgress();
     if (modeBeforeStop == ManagedSessionMode::ClosedLoop || wasClosedLoop) {
         appendLog(QStringLiteral("Closed-loop experiment stopped; continuous acquisition remains running."));
         return;

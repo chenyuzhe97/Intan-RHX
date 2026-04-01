@@ -15,6 +15,7 @@
 #include <QDockWidget>
 #include <QElapsedTimer>
 #include <QLineEdit>
+#include <QProgressBar>
 #include <QSpinBox>
 
 #include "acquisitionengine.h"
@@ -138,6 +139,10 @@ private:
     void stopVoidStimReplay(bool logMessage);
     void finishManagedExperimentWithReminder(const QString &experimentName,
                                              const QString &detail = QString());
+    void startManagedExperimentProgress(const QString &experimentName, qint64 totalDurationMs);
+    void stopManagedExperimentProgress();
+    void refreshManagedExperimentProgress();
+    static QString formatDurationForUi(qint64 durationMs);
 
 private:
     struct StimEventRecord {
@@ -180,6 +185,9 @@ private:
     QPushButton    *m_btnRecStart        = nullptr;
     QPushButton    *m_btnRecStop         = nullptr;
     QPushButton    *m_btnShowAllChannels = nullptr;
+    QLabel         *m_lblExperimentProgress = nullptr;
+    QProgressBar   *m_progressExperiment = nullptr;
+    QTimer         *m_experimentProgressTimer = nullptr;
     QPushButton    *m_btnApplyManualStim = nullptr;
 
     QDoubleSpinBox *m_spinEpochSec = nullptr;
@@ -260,6 +268,8 @@ private:
     bool               m_managedSessionClockActive = false;
     QVector<StimEventRecord> m_managedStimEvents;
     quint64            m_voidStimReplayToken = 0;
+    QString            m_activeExperimentProgressName;
+    qint64             m_activeExperimentProgressDurationMs = 0;
     QString            m_activeFixedStimElectrode;
     double             m_activeFixedStimAmp_uA = 0.0;
     int                m_activeFixedStimPhaseUs = 0;
